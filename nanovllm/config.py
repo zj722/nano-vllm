@@ -16,7 +16,7 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
-    quantization: Optional[str] = None
+    quantization: str | None = None
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
@@ -25,15 +25,16 @@ class Config:
         # following will get the config.json from huggingface downloaded model root folder.
         # also convert json to a AutoConfig object for later use.
         self.hf_config = AutoConfig.from_pretrained(self.model)
-        self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
-        assert self.max_num_batched_tokens >= self.max_model_len
 
         if self.quantization is None:
-            # 逻辑 A: 检查路径名是否包含 fp8 
-            if "fp8" in self.model.lower():
-                self.quantization = "fp8"
-            # 逻辑 B: 检查 config.json 里的量化配置 (兼容 HF 官方格式)
-            elif hasattr(self.hf_config, "quantization_config"):
-                quant_method = self.hf_config.quantization_config.get("quant_method")
-                if quant_method:
-                    self.quantization = quant_method.lower()
+            quant_cfg = getattr(self.hf_config, "quantization_config", None)
+            if quant_cfg:
+                method = quant_cfg.get("quant_method")
+                if method:
+                    self.quantization = method.lower()
+        self.hf_config.quantization = self.quantization
+        
+        print(f"\033[92m[DEBUG] Config detected quantization: {self.quantization}\033[0m")
+
+        self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
+        assert self.max_num_batched_tokens >= self.max_model_len

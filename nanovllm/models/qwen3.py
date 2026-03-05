@@ -6,15 +6,15 @@ from transformers import Qwen3Config
 from nanovllm.layers.activation import SiluAndMul
 from nanovllm.layers.attention import Attention
 from nanovllm.layers.layernorm import RMSNorm
-from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
+from nanovllm.layers.factory import get_linear_layer
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
-from nanovllm.layers.quantization_fp8.Linear_fp8 import QKVParallelLinear_fp8, MergedColumnParallelLinear_fp8, RowParallelLinear_fp8
 
 class Qwen3Attention(nn.Module):
 
     def __init__(
         self,
+        config: any, # 接收 config 对象以供工厂判断量化模式
         hidden_size: int,
         num_heads: int,
         num_kv_heads: int,
@@ -39,18 +39,24 @@ class Qwen3Attention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
 
-        self.qkv_proj = QKVParallelLinear_fp8(
+        # --- 通过工厂动态获取线性层类 ---
+        QKVLinearClass = get_linear_layer("QKV", config)
+        RowLinearClass = get_linear_layer("Row", config)
+
+        self.qkv_proj = QKVLinearClass(
             hidden_size,
             self.head_dim,
             self.total_num_heads,
             self.total_num_kv_heads,
             bias=qkv_bias,
         )
-        self.o_proj = RowParallelLinear_fp8(
+        self.o_proj = RowLinearClass(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
         )
+        # ----------------------------
+
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -91,21 +97,29 @@ class Qwen3MLP(nn.Module):
 
     def __init__(
         self,
+        config: any, # 接收 config 对象
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear_fp8(
+        
+        # --- 通过工厂动态获取线性层类 ---
+        MergedColumnLinearClass = get_linear_layer("MergedColumn", config)
+        RowLinearClass = get_linear_layer("Row", config)
+
+        self.gate_up_proj = MergedColumnLinearClass(
             hidden_size,
             [intermediate_size] * 2,
             bias=False,
         )
-        self.down_proj = RowParallelLinear_fp8(
+        self.down_proj = RowLinearClass(
             intermediate_size,
             hidden_size,
             bias=False,
         )
+        # ----------------------------
+
         assert hidden_act == "silu"
         self.act_fn = SiluAndMul()
 
@@ -123,7 +137,9 @@ class Qwen3DecoderLayer(nn.Module):
         config: Qwen3Config,
     ) -> None:
         super().__init__()
+        # 将 config 透传给 Attention 和 MLP
         self.self_attn = Qwen3Attention(
+            config=config,
             hidden_size=config.hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
@@ -135,6 +151,7 @@ class Qwen3DecoderLayer(nn.Module):
             rope_scaling=getattr(config, "rope_scaling", None),
         )
         self.mlp = Qwen3MLP(
+            config=config,
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
@@ -166,6 +183,7 @@ class Qwen3Model(nn.Module):
     ) -> None:
         super().__init__()
         self.embed_tokens = VocabParallelEmbedding(config.vocab_size, config.hidden_size)
+        # 每一层都会接收到 config
         self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
