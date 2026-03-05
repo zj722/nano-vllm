@@ -125,21 +125,36 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         original_shape = x.shape 
-        # 压扁成 2D: [Batch * Seq, Hidden]
-        x_2d = x.view(-1, original_shape[-1])
-        M = x_2d.shape[0]
-        if M > 1:
-            x_fp8, x_scale = self._dynamic_quantize_activation_per_token(x_2d)
-            # 注意：这里的 triton_fp8_block_gemm 是上一轮写好带有 Split-K 的智能启动器
-            y_2d = triton_fp8_block_gemm(x_fp8, self.weight.t(), x_scale, self.weight_scale_inv.t())
-            if self.bias is not None:
-                y_2d = y_2d + self.bias
-            return y_2d.view(*original_shape[:-1], -1)
-        else:
-            # Decode: 极致务实，Dequant Weight + 官方 BF16 Linear
-            weight_bf16 = self._dequantize_weight()
-            return F.linear(x, weight_bf16)
+        if x.numel() == 0:
+            # 如果没活干，直接造一个形状正确的空张量返回，跳过所有运算
+            # 假设你的 weight 形状是 [out_features, in_features]
+            out_features = self.weight.shape[0] 
+            return torch.empty(*original_shape[:-1], out_features, device=x.device, dtype=x.dtype)
 
+       
+        
+        # 1. 压扁成 2D: [Batch * Seq, Hidden]
+        x_2d = x.view(-1, original_shape[-1])
+        
+        # 2. 动态量化激活值 (统一调用你写好的函数)
+        x_fp8, x_scale = self._dynamic_quantize_activation_per_token(x_2d)
+        
+        # 3. 终极一战：全场景使用带 Split-K 的 Triton FP8 GEMM 算子
+        # 在 Decode 时，它会自动享受 CUDA Graph 的零开销红利！
+        y_2d = triton_fp8_block_gemm(
+            x_fp8, 
+            self.weight.t(), 
+            x_scale, 
+            self.weight_scale_inv.t()
+        )
+        
+        # 4. 加上偏置 (如果有的话)
+        if self.bias is not None:
+            y_2d = y_2d + self.bias
+        # 6. 变回原来的形状
+        y = y_2d.view(*original_shape[:-1], -1)
+        return y
+           
 
         # x_fp8, x_scale = triton_dynamic_quantize(x_2d)
         # return triton_fp8_block_gemm(x_fp8, self.weight.t(), x_scale, self.weight_scale_inv.t(), )
@@ -161,42 +176,43 @@ class RowParallelLinear_fp8(LinearBase_fp8):
         param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # dequant_w = self._dequantize_weight()
-        # y = F.linear(x, dequant_w, self.bias if self.tp_rank == 0 else None)
         original_shape = x.shape 
+        if x.numel() == 0:
+            # 如果没活干，直接造一个形状正确的空张量返回，跳过所有运算
+            # 假设你的 weight 形状是 [out_features, in_features]
+            out_features = self.weight.shape[0] 
+            return torch.empty(*original_shape[:-1], out_features, device=x.device, dtype=x.dtype)
+
+ 
+
+        
+        
+        # 1. 压扁成 2D: [Batch * Seq, Hidden]
         x_2d = x.view(-1, original_shape[-1])
-        x_fp8, x_scale = triton_dynamic_quantize(x_2d)
-        y_2d = triton_fp8_block_gemm(x_fp8, self.weight.t(), x_scale, self.weight_scale_inv.t(), )
+        
+        # 2. 动态量化激活值 (统一调用你写好的函数)
+        x_fp8, x_scale = self._dynamic_quantize_activation_per_token(x_2d)
+        
+        # 3. 终极一战：全场景使用带 Split-K 的 Triton FP8 GEMM 算子
+        # 在 Decode 时，它会自动享受 CUDA Graph 的零开销红利！
+        y_2d = triton_fp8_block_gemm(
+            x_fp8, 
+            self.weight.t(), 
+            x_scale, 
+            self.weight_scale_inv.t()
+        )
+        
+        # 4. 加上偏置 (如果有的话)
+        if self.bias is not None:
+            y_2d = y_2d + self.bias
+            
+        # 5. 张量并行归约
         if self.tp_size > 1:
             dist.all_reduce(y_2d)
 
+        # 6. 变回原来的形状
         y = y_2d.view(*original_shape[:-1], -1)
         return y
-
-        original_shape = x.shape 
-        # 压扁成 2D: [Batch * Seq, Hidden]
-        x_2d = x.view(-1, original_shape[-1])
-        M = x_2d.shape[0]
-        if M > 1:
-            x_fp8, x_scale = self._dynamic_quantize_activation_per_token(x_2d)
-            # 注意：这里的 triton_fp8_block_gemm 是上一轮写好带有 Split-K 的智能启动器
-            y_2d = triton_fp8_block_gemm(x_fp8, self.weight.t(), x_scale, self.weight_scale_inv.t())
-            if self.bias is not None:
-                y_2d = y_2d + self.bias
-            if self.tp_size > 1:
-                dist.all_reduce(y_2d)
-
-            y = y_2d.view(*original_shape[:-1], -1)
-            return y
-        else:
-            # Decode: 极致务实，Dequant Weight + 官方 BF16 Linear
-            weight_bf16 = self._dequantize_weight()
-            y = F.linear(x, weight_bf16)
-            if self.bias is not None:
-                y = y + self.bias
-            if self.tp_size > 1:
-                dist.all_reduce(y)
-            return y
            
 
 
