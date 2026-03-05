@@ -9,6 +9,9 @@ def divide(numerator, denominator):
     return numerator // denominator
 
 
+# base class defined basic parameters and weight loading function.
+# this is the very basic method that allocate memory based on input and ouput size, so for out distributed case
+# this should be worked on allocating right sized for one single GPU.
 class LinearBase(nn.Module):
 
     def __init__(
@@ -20,7 +23,7 @@ class LinearBase(nn.Module):
     ):
         super().__init__()
         self.tp_dim = tp_dim
-        self.tp_rank = dist.get_rank()
+        self.tp_rank = dist.get_rank() # GPU indext
         self.tp_size = dist.get_world_size()
         self.weight = nn.Parameter(torch.empty(output_size, input_size))
         self.weight.weight_loader = self.weight_loader
@@ -56,10 +59,11 @@ class ColumnParallelLinear(LinearBase):
     def __init__(
         self,
         input_size: int,
-        output_size: int,
+        output_size: int, #全局output_size
         bias: bool = False,
     ):
         tp_size = dist.get_world_size()
+        # for this call, the base method will calculate the weight size for one single GPU.
         super().__init__(input_size, divide(output_size, tp_size), bias, 0)
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
@@ -72,7 +76,9 @@ class ColumnParallelLinear(LinearBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(x, self.weight, self.bias)
 
-
+"""
+this can mergemultiple linear layer into one, a way of fused kernal
+"""
 class MergedColumnParallelLinear(ColumnParallelLinear):
 
     def __init__(
@@ -103,6 +109,10 @@ class QKVParallelLinear(ColumnParallelLinear):
         total_num_kv_heads: int | None = None,
         bias: bool = False,
     ):
+        """
+        following much of code is just for calculating right output size for one gpu
+        as base linear only consider for allocating size for one gpu.
+        """
         tp_size = dist.get_world_size()
         total_num_kv_heads = total_num_kv_heads or total_num_heads
         self.head_size = head_size
