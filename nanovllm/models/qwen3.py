@@ -9,6 +9,7 @@ from nanovllm.layers.layernorm import RMSNorm
 from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from nanovllm.layers.quantization_fp8.Linear_fp8 import ColumnParallelLinear_fp8, RowParallelLinear_fp8, MergedColumnParallelLinear_fp8, QKVParallelLinear_fp8 
 
 
 class Qwen3Attention(nn.Module):
@@ -39,14 +40,14 @@ class Qwen3Attention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
 
-        self.qkv_proj = QKVParallelLinear(
+        self.qkv_proj = QKVParallelLinear_fp8(
             hidden_size,
             self.head_dim,
             self.total_num_heads,
             self.total_num_kv_heads,
             bias=qkv_bias,
         )
-        self.o_proj = RowParallelLinear(
+        self.o_proj = RowParallelLinear_fp8(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
@@ -96,12 +97,12 @@ class Qwen3MLP(nn.Module):
         hidden_act: str,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
+        self.gate_up_proj = MergedColumnParallelLinear_fp8(
             hidden_size,
             [intermediate_size] * 2,
             bias=False,
         )
-        self.down_proj = RowParallelLinear(
+        self.down_proj = RowParallelLinear_fp8(
             intermediate_size,
             hidden_size,
             bias=False,
