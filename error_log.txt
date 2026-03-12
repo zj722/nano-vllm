@@ -1,0 +1,247 @@
+`torch_dtype` is deprecated! Use `dtype` instead!
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] failed while attempting to run meta for aten.add_.Tensor
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] Traceback (most recent call last):
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 2384, in _dispatch_impl
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     r = func(*args, **kwargs)
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]         ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_ops.py", line 723, in __call__
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     return self._op(*args, **kwargs)
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_meta_registrations.py", line 3716, in meta_binop_inplace_alpha
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     check_inplace_broadcast(self.shape, other.shape)
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_meta_registrations.py", line 90, in check_inplace_broadcast
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     broadcasted_shape = tuple(_broadcast_shapes(self_shape, *args_shape))
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_refs/__init__.py", line 425, in _broadcast_shapes
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     torch._check(
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/__init__.py", line 1656, in _check
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     _check_with(RuntimeError, cond, message)
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/__init__.py", line 1638, in _check_with
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     raise error_type(message_evaluated)
+[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] RuntimeError: Attempting to broadcast a dimension of length 1024 at -1! Mismatching argument at index 1 had torch.Size([16384, 1024]); but expected shape should be broadcastable to [16384, 16]
+[92m[DEBUG] Config detected quantization: fp8[0m
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/rog/nano-vllm/example.py", line 34, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/rog/nano-vllm/example.py", line 10, in main
+[rank0]:     llm = LLM(path, enforce_eager=False, tensor_parallel_size=1)
+[rank0]:           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/engine/llm_engine.py", line 30, in __init__
+[rank0]:     self.model_runner = ModelRunner(config, 0, self.events)
+[rank0]:                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/engine/model_runner.py", line 34, in __init__
+[rank0]:     self.warmup_model()
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/engine/model_runner.py", line 97, in warmup_model
+[rank0]:     self.run(seqs, True)
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/engine/model_runner.py", line 211, in run
+[rank0]:     logits = self.run_model(input_ids, positions, is_prefill)
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+[rank0]:     return func(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/engine/model_runner.py", line 192, in run_model
+[rank0]:     return self.model.compute_logits(self.model(input_ids, positions))
+[rank0]:                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 321, in forward
+[rank0]:     return self.model(input_ids, positions)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 292, in forward
+[rank0]:     hidden_states, residual = layer(positions, hidden_states, residual)
+[rank0]:                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 258, in forward
+[rank0]:     hidden_states_fp8, scale, residual = self.post_attention_layernorm(hidden_states, residual)
+[rank0]:                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/layers/quantization_fp8/layernorm_fp8.py", line 66, in forward
+[rank0]:     return self.add_rms_forward(x, residual)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py", line 574, in _fn
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1380, in __call__
+[rank0]:     return self._torchdynamo_orig_callable(
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 1164, in __call__
+[rank0]:     result = self._inner_convert(
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 547, in __call__
+[rank0]:     return _compile(
+[rank0]:            ^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 986, in _compile
+[rank0]:     guarded_code = compile_inner(code, one_graph, hooks, transform)
+[rank0]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 715, in compile_inner
+[rank0]:     return _compile_inner(code, one_graph, hooks, transform)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_utils_internal.py", line 95, in wrapper_function
+[rank0]:     return function(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 750, in _compile_inner
+[rank0]:     out_code = transform_code_object(code, transform)
+[rank0]:                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/bytecode_transformation.py", line 1361, in transform_code_object
+[rank0]:     transformations(instructions, code_options)
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 231, in _fn
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/convert_frame.py", line 662, in transform
+[rank0]:     tracer.run()
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 2868, in run
+[rank0]:     super().run()
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1052, in run
+[rank0]:     while self.step():
+[rank0]:           ^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 962, in step
+[rank0]:     self.dispatch_table[inst.opcode](self, inst)
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 659, in wrapper
+[rank0]:     return inner_fn(self, inst)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 2341, in CALL
+[rank0]:     self._call(inst)
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 2335, in _call
+[rank0]:     self.call_function(fn, args, kwargs)
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 897, in call_function
+[rank0]:     self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+[rank0]:               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/misc.py", line 1022, in call_function
+[rank0]:     return self.obj.call_method(tx, self.name, args, kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/tensor.py", line 568, in call_method
+[rank0]:     return dispatch_torch_function(
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/torch_function.py", line 543, in dispatch_torch_function
+[rank0]:     res = tx.symbolic_torch_function_state.call_torch_function_mode(
+[rank0]:           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/torch_function.py", line 274, in call_torch_function_mode
+[rank0]:     return cur_mode.call_torch_function(tx, fn, types, args, kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/torch_function.py", line 392, in call_torch_function
+[rank0]:     return call_torch_function(
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/torch_function.py", line 506, in call_torch_function
+[rank0]:     return tx.inline_user_function_return(torch_function_var, tf_args, {})
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 903, in inline_user_function_return
+[rank0]:     return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 3072, in inline_call
+[rank0]:     return cls.inline_call_(parent, func, args, kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 3198, in inline_call_
+[rank0]:     tracer.run()
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1052, in run
+[rank0]:     while self.step():
+[rank0]:           ^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 962, in step
+[rank0]:     self.dispatch_table[inst.opcode](self, inst)
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 659, in wrapper
+[rank0]:     return inner_fn(self, inst)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 1736, in CALL_FUNCTION_EX
+[rank0]:     self.call_function(fn, argsvars.items, kwargsvars)
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/symbolic_convert.py", line 897, in call_function
+[rank0]:     self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
+[rank0]:               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/torch.py", line 904, in call_function
+[rank0]:     return self.call_tensor_method(tx, args, kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/torch.py", line 1171, in call_tensor_method
+[rank0]:     return args[0].call_method(tx, self.get_function().__name__, args[1:], kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/tensor.py", line 591, in call_method
+[rank0]:     return wrap_fx_proxy(
+[rank0]:            ^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/builder.py", line 2153, in wrap_fx_proxy
+[rank0]:     return wrap_fx_proxy_cls(target_cls=TensorVariable, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/builder.py", line 2219, in wrap_fx_proxy_cls
+[rank0]:     return _wrap_fx_proxy(
+[rank0]:            ^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/variables/builder.py", line 2315, in _wrap_fx_proxy
+[rank0]:     example_value = get_fake_value(proxy.node, tx, allow_non_graph_fake=True)
+[rank0]:                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 2536, in get_fake_value
+[rank0]:     raise TorchRuntimeError(str(e)).with_traceback(e.__traceback__) from None
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 2471, in get_fake_value
+[rank0]:     ret_val = wrap_fake_exception(
+[rank0]:               ^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 2017, in wrap_fake_exception
+[rank0]:     return fn()
+[rank0]:            ^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 2472, in <lambda>
+[rank0]:     lambda: run_node(tx.output, node, args, kwargs, nnmodule)
+[rank0]:             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 2604, in run_node
+[rank0]:     raise RuntimeError(make_error_message(e)).with_traceback(
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_dynamo/utils.py", line 2588, in run_node
+[rank0]:     return getattr(args[0], node.target)(*args[1:], **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/utils/_stats.py", line 21, in wrapper
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 1276, in __torch_dispatch__
+[rank0]:     return self.dispatch(func, types, args, kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 1816, in dispatch
+[rank0]:     return self._cached_dispatch_impl(func, types, args, kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 1377, in _cached_dispatch_impl
+[rank0]:     output = self._dispatch_impl(func, types, args, kwargs)
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 2384, in _dispatch_impl
+[rank0]:     r = func(*args, **kwargs)
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_ops.py", line 723, in __call__
+[rank0]:     return self._op(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_meta_registrations.py", line 3716, in meta_binop_inplace_alpha
+[rank0]:     check_inplace_broadcast(self.shape, other.shape)
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_meta_registrations.py", line 90, in check_inplace_broadcast
+[rank0]:     broadcasted_shape = tuple(_broadcast_shapes(self_shape, *args_shape))
+[rank0]:                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_refs/__init__.py", line 425, in _broadcast_shapes
+[rank0]:     torch._check(
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/__init__.py", line 1656, in _check
+[rank0]:     _check_with(RuntimeError, cond, message)
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/__init__.py", line 1638, in _check_with
+[rank0]:     raise error_type(message_evaluated)
+[rank0]: torch._dynamo.exc.TorchRuntimeError: Failed running call_method add_(*(FakeTensor(..., device='cuda:0', size=(16384, 16), dtype=torch.float32), FakeTensor(..., device='cuda:0', size=(16384, 1024), dtype=torch.float32)), **{}):
+[rank0]: Attempting to broadcast a dimension of length 1024 at -1! Mismatching argument at index 1 had torch.Size([16384, 1024]); but expected shape should be broadcastable to [16384, 16]
+
+[rank0]: from user code:
+[rank0]:    File "/home/rog/nano-vllm/nanovllm/layers/quantization_fp8/layernorm_fp8.py", line 43, in add_rms_forward
+[rank0]:     x = x.float().add_(residual.float())
+[rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/utils/_device.py", line 104, in __torch_function__
+[rank0]:     return func(*args, **kwargs)
+
+[rank0]: Set TORCH_LOGS="+dynamo" and TORCHDYNAMO_VERBOSE=1 for more information
+
+
+[rank0]: You can suppress this exception and fall back to eager by setting:
+[rank0]:     import torch._dynamo
+[rank0]:     torch._dynamo.config.suppress_errors = True
+
+[rank0]:[W313 00:08:12.186704741 ProcessGroupNCCL.cpp:1496] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

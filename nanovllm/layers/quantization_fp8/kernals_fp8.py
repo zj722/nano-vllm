@@ -152,9 +152,6 @@ def fp8_split_k_gemm_kernel(
         
         acc += local_acc
 
-    # -----------------------------------------------------------
-    # 4. 乘上 A_Scale，并使用 Atomic Add (原子加法) 写入显存
-    # -----------------------------------------------------------
     acc = acc * a_scale
     
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
@@ -162,8 +159,18 @@ def fp8_split_k_gemm_kernel(
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
 
-    # ⚠️ 极其关键：因为有多个 pid_k 都在算同一块 C 矩阵，必须用原子加法，否则数据会互相覆盖！
+
     tl.atomic_add(c_ptrs, acc, mask=mask)
+    # if SPLIT_K == 1:
+    #     # 🚀 PREFILL 模式 (大矩阵)：
+    #     # 没有多 Block 竞争，不用原子加法！
+    #     # 在寄存器里直接转成 BF16，然后暴力覆盖写入目标显存
+    #     c_bf16 = acc.to(tl.bfloat16)
+    #     tl.store(c_ptrs, c_bf16, mask=mask)
+    # else:
+    #     # 🏎️ DECODE 模式 (小矩阵)：
+    #     # K 被切碎了，必须用高精度 FP32 做原子加法，防止精度爆炸
+    #     tl.atomic_add(c_ptrs, acc, mask=mask)
 
 
 # ==========================================
@@ -174,20 +181,17 @@ def triton_fp8_block_gemm(
     weight_fp8: torch.Tensor, 
     x_scale: torch.Tensor, 
     weight_scale_inv: torch.Tensor, 
+    output_fp32: torch.Tensor,
     block_size_k: int = 128
 ) -> torch.Tensor:
-    
+
     M, K = x_fp8.shape
     K_w, N = weight_fp8.shape
     assert K == K_w
     
-    # -------------------------------------------------------------
-    # 🌟 智能换挡系统 (Heuristics) 🌟
-    # 根据 M 的大小自动决定是否使用 Split-K
-    # -------------------------------------------------------------
     if M <= 32: 
         # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
-        SPLIT_K = 16 # default 16
+        SPLIT_K = 2 # default 16
         BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
         BLOCK_SIZE_N = 128 # default 128
         num_stages = 4 
@@ -199,7 +203,14 @@ def triton_fp8_block_gemm(
         BLOCK_SIZE_N = 128
         num_stages = 3
         num_warps = 8
-        
+    
+    # # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
+    # SPLIT_K = 16 # default 16
+    # BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
+    # BLOCK_SIZE_N = 128 # default 128
+    # num_stages = 4 
+    # num_warps = 4
+    
     BLOCK_SIZE_K = block_size_k
 
     # -------------------------------------------------------------
@@ -207,7 +218,7 @@ def triton_fp8_block_gemm(
     # 因为底层有多个线程块用 Atomic Add 往里累加，如果不清零，结果会带上显存垃圾。
     # 用 FP32 累加能保证精度绝对不掉，算完再转 BF16。
     # -------------------------------------------------------------
-    output_fp32 = torch.zeros((M, N), device=x_fp8.device, dtype=torch.float32)
+   
 
     grid = (
         triton.cdiv(M, BLOCK_SIZE_M),
@@ -226,7 +237,6 @@ def triton_fp8_block_gemm(
         BLOCK_SIZE_N=BLOCK_SIZE_N,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
         SPLIT_K=SPLIT_K,
-        num_stages=num_stages,
         num_warps=num_warps
     )
 
