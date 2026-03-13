@@ -1,24 +1,24 @@
 `torch_dtype` is deprecated! Use `dtype` instead!
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] failed while attempting to run meta for aten.add_.Tensor
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] Traceback (most recent call last):
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 2384, in _dispatch_impl
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     r = func(*args, **kwargs)
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]         ^^^^^^^^^^^^^^^^^^^^^
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_ops.py", line 723, in __call__
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     return self._op(*args, **kwargs)
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]            ^^^^^^^^^^^^^^^^^^^^^^^^^
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_meta_registrations.py", line 3716, in meta_binop_inplace_alpha
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     check_inplace_broadcast(self.shape, other.shape)
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_meta_registrations.py", line 90, in check_inplace_broadcast
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     broadcasted_shape = tuple(_broadcast_shapes(self_shape, *args_shape))
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_refs/__init__.py", line 425, in _broadcast_shapes
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     torch._check(
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/__init__.py", line 1656, in _check
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     _check_with(RuntimeError, cond, message)
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/__init__.py", line 1638, in _check_with
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     raise error_type(message_evaluated)
-[rank0]:E0313 00:08:12.383000 139195 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] RuntimeError: Attempting to broadcast a dimension of length 1024 at -1! Mismatching argument at index 1 had torch.Size([16384, 1024]); but expected shape should be broadcastable to [16384, 16]
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] failed while attempting to run meta for aten.add_.Tensor
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] Traceback (most recent call last):
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py", line 2384, in _dispatch_impl
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     r = func(*args, **kwargs)
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]         ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_ops.py", line 723, in __call__
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     return self._op(*args, **kwargs)
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_meta_registrations.py", line 3716, in meta_binop_inplace_alpha
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     check_inplace_broadcast(self.shape, other.shape)
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_meta_registrations.py", line 90, in check_inplace_broadcast
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     broadcasted_shape = tuple(_broadcast_shapes(self_shape, *args_shape))
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/_refs/__init__.py", line 425, in _broadcast_shapes
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     torch._check(
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/__init__.py", line 1656, in _check
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     _check_with(RuntimeError, cond, message)
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/__init__.py", line 1638, in _check_with
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0]     raise error_type(message_evaluated)
+[rank0]:E0313 13:50:18.360000 29582 .venv/lib/python3.12/site-packages/torch/_subclasses/fake_tensor.py:2388] [3/0] RuntimeError: Attempting to broadcast a dimension of length 1024 at -1! Mismatching argument at index 1 had torch.Size([16384, 1024]); but expected shape should be broadcastable to [16384, 16]
 [92m[DEBUG] Config detected quantization: fp8[0m
 [rank0]: Traceback (most recent call last):
 [rank0]:   File "/home/rog/nano-vllm/example.py", line 34, in <module>
@@ -48,7 +48,7 @@
 [rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
 [rank0]:     return forward_call(*args, **kwargs)
 [rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 321, in forward
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 288, in forward
 [rank0]:     return self.model(input_ids, positions)
 [rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 [rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
@@ -57,7 +57,7 @@
 [rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
 [rank0]:     return forward_call(*args, **kwargs)
 [rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 292, in forward
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 259, in forward
 [rank0]:     hidden_states, residual = layer(positions, hidden_states, residual)
 [rank0]:                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 [rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
@@ -66,7 +66,7 @@
 [rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
 [rank0]:     return forward_call(*args, **kwargs)
 [rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 258, in forward
+[rank0]:   File "/home/rog/nano-vllm/nanovllm/models/qwen3.py", line 225, in forward
 [rank0]:     hidden_states_fp8, scale, residual = self.post_attention_layernorm(hidden_states, residual)
 [rank0]:                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 [rank0]:   File "/home/rog/nano-vllm/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
@@ -244,4 +244,4 @@
 [rank0]:     import torch._dynamo
 [rank0]:     torch._dynamo.config.suppress_errors = True
 
-[rank0]:[W313 00:08:12.186704741 ProcessGroupNCCL.cpp:1496] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank0]:[W313 13:50:18.347249008 ProcessGroupNCCL.cpp:1496] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

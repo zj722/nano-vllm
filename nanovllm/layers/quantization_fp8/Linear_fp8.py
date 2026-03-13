@@ -176,14 +176,23 @@ class RowParallelLinear_fp8(LinearBase_fp8):
         x_fp8_2d = x_fp8.view(-1, original_shape[-1])
         x_scale_2d = x_scale.view(-1, 1) # 确保 scale 也是 2D [M, 1]
         M = x_fp8_2d.shape[0]
-        #if M <= self.max_decode_batch:
-        # Decode 阶段：从霸占好的显存里切出前 M 行
-        out_fp32 = self.output_fp32_workspace[:M, :]
-        # zero_() 是原位操作 (In-place)，极快，不会触发内存重新分配！
-        out_fp32.zero_()
-        # else:
-        #     # Prefill 阶段：因为 M 很大（Seq_len * Batch），只能临时分配
-        #     out_fp32 = torch.empty((M, self.output_size), device=x_fp8.device, dtype=torch.float32)
+        # #if M <= self.max_decode_batch:
+        # # Decode 阶段：从霸占好的显存里切出前 M 行
+        # out_fp32 = self.output_fp32_workspace[:M, :]
+        # # zero_() 是原位操作 (In-place)，极快，不会触发内存重新分配！
+        # out_fp32.zero_()
+        # # else:
+        # #     # Prefill 阶段：因为 M 很大（Seq_len * Batch），只能临时分配
+        # #     out_fp32 = torch.empty((M, self.output_size), device=x_fp8.device, dtype=torch.float32)
+
+        # 2. [🚨 重要修复] 显存分配逻辑：防止 Prefill 阶段维度坍塌
+        if M <= self.max_decode_batch:
+            # Decode 阶段：使用预分配的 Workspace
+            out_fp32 = self.output_fp32_workspace[:M, :]
+            out_fp32.zero_()
+        else:
+            # Prefill 阶段：分配临时显存，大小必须是 [M, output_size]
+            out_fp32 = torch.empty((M, self.output_size), device=x.device, dtype=torch.float32)
 
         y_2d = triton_fp8_block_gemm(
             x_fp8_2d, 
