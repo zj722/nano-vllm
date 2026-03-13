@@ -6,7 +6,7 @@ from transformers import Qwen3Config
 from nanovllm.layers.activation import SiluAndMul
 from nanovllm.layers.attention import Attention
 from nanovllm.layers.layernorm import RMSNorm
-from nanovllm.layers.factory import get_linear_layer
+from nanovllm.layers.factory import get_linear_layer, get_norm_layer
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 from nanovllm.layers.quantization_fp8.layernorm_fp8 import RMSNorm_FP8
@@ -87,11 +87,11 @@ class Qwen3Attention(nn.Module):
     def forward(
         self,
         positions: torch.Tensor,
-        hidden_states_fp8: torch.Tensor, 
-        scale: torch.Tensor
+        hidden_states: torch.Tensor, 
+        scale: torch.Tensor | None
     ) -> torch.Tensor:
         # [🚨 FP8 改造: 将 fp8 和 scale 喂给底层重写的 QKV ColumnParallelLinear_fp8]
-        qkv = self.qkv_proj(hidden_states_fp8, scale) 
+        qkv = self.qkv_proj(hidden_states, scale) 
         
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q = q.view(-1, self.num_heads, self.head_dim)
@@ -167,9 +167,9 @@ class Qwen3MLP(nn.Module):
     #     return x
 
     # [🚨 FP8 改造: 修改参数列表，接收 fp8 张量和 scale]
-    def forward(self, x_fp8: torch.Tensor, scale: torch.Tensor):
+    def forward(self, x: torch.Tensor, scale: torch.Tensor | None):
         # [🚨 FP8 改造: 将 fp8 和 scale 喂给底层重写的 Gate_Up ColumnParallelLinear_fp8]
-        gate_up = self.gate_up_proj(x_fp8, scale) 
+        gate_up = self.gate_up_proj(x, scale) 
         # gate_up = self.gate_up_proj(x, scale)
         x = self.act_fn(gate_up)
         x = self.down_proj(x)
@@ -208,11 +208,9 @@ class Qwen3DecoderLayer(nn.Module):
         # self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # [🚨 FP8 改造: 使用新的自带量化的 RMSNorm_FP8]
-        self.input_layernorm = RMSNorm_FP8(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm_FP8(config.hidden_size, eps=config.rms_norm_eps)
-
-        # self.input_layernorm = NormClass(config.hidden_size, eps=config.rms_norm_eps)
-        # self.post_attention_layernorm = NormClass(config.hidden_size, eps=config.rms_norm_eps)
+        NormClass = get_norm_layer(config)
+        self.input_layernorm = NormClass(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = NormClass(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -232,12 +230,10 @@ class Qwen3DecoderLayer(nn.Module):
             
         # [🚨 FP8 改造: 解包出 fp8_tensor 和 scale]
         if residual is None:
-            hidden_states_fp8, scale = self.input_layernorm(hidden_states)
+            hidden_states_quant, scale = self.input_layernorm(hidden_states)
             residual = hidden_states
         else:
-            hidden_states_fp8, scale, residual = self.input_layernorm(hidden_states, residual)
-
-        # hidden_states_quant, scale, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states_quant, scale, residual = self.input_layernorm(hidden_states, residual)
             
         # ==========================================
         # 2. Attention
@@ -246,7 +242,7 @@ class Qwen3DecoderLayer(nn.Module):
         # hidden_states = self.self_attn(positions, hidden_states)
 
         # [🚨 FP8 改造: 将解包出的 fp8_tensor 和 scale 传给 attention]
-        hidden_states = self.self_attn(positions, hidden_states_fp8, scale)
+        hidden_states = self.self_attn(positions, hidden_states_quant, scale)
         
         # ==========================================
         # 3. Post Attention Layernorm
@@ -255,7 +251,7 @@ class Qwen3DecoderLayer(nn.Module):
         # hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
 
         # [🚨 FP8 改造: 重新解包，这时候 residual 必定不为 None]
-        hidden_states_fp8, scale, residual = self.post_attention_layernorm(hidden_states, residual)
+        hidden_states_quant, scale, residual = self.post_attention_layernorm(hidden_states, residual)
         
         # ==========================================
         # 4. MLP
@@ -264,7 +260,7 @@ class Qwen3DecoderLayer(nn.Module):
         # hidden_states = self.mlp(hidden_states)
 
         # [🚨 FP8 改造: 将解包出的 fp8_tensor 和 scale 传给 mlp。修复了之前 scales 的笔误]
-        hidden_states = self.mlp(hidden_states_fp8, scale)
+        hidden_states = self.mlp(hidden_states_quant, scale)
         
         return hidden_states, residual
 
