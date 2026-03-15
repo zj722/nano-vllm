@@ -53,6 +53,16 @@ class LinearBase_fp8(nn.Module):
         else:
             self.register_parameter("bias", None)
 
+        self.register_buffer(
+            "weight_t_packed",
+            torch.empty(input_size, output_size, dtype=torch.float8_e4m3fn),
+            persistent=False
+        )
+        self.register_buffer(
+            "weight_scale_t_packed",
+            torch.empty(scale_input_size, scale_output_size, dtype=torch.float32),
+            persistent=False
+        )
 
         # 提前分配内存
         self.max_decode_batch = 256
@@ -62,6 +72,15 @@ class LinearBase_fp8(nn.Module):
             torch.zeros((self.max_decode_batch, self.output_size), dtype=torch.float32),
             persistent=False # persistent=False 表示它不需要被保存到 weights checkpoint 里
         )
+
+
+
+    @torch.no_grad()
+    def refresh_packed_weight_views(self):
+        self.weight_t_packed.copy_(self.weight.data.t().contiguous())
+        self.weight_scale_t_packed.copy_(self.weight_scale_inv.data.t().contiguous())
+
+
 
     # expand scale to full weight shape and dequantized by doing element-wise multiplication
     def _dequantize_weight(self) -> torch.Tensor:
@@ -105,29 +124,26 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
         start_idx (也就是 start)：这一刀从第几个索引开始下刀?
         shard_size (也就是 length)：切下来多厚（多少行）的一块肉？
         """
-        param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
-
+        #param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
+        local_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
+        param.data.copy_(local_weight)
+        self.weight_t_packed.copy_(local_weight.t().contiguous())
     def scale_loader(self, param: nn.Parameter, loaded_scale: torch.Tensor):
         shard_size = param.data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
-        param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
-
+        #param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
+        local_scale = loaded_scale.narrow(self.tp_dim, start_idx, shard_size)
+        param.data.copy_(local_scale)
+        self.weight_scale_t_packed.copy_(local_scale.t().contiguous())
     # use only fp8 gemm kernal
     def forward(self, x_fp8: torch.Tensor, x_scale: torch.Tensor) -> torch.Tensor:
-        original_shape = x_fp8.shape
-        x_fp8_2d = x_fp8.view(-1, original_shape[-1])
 
-        # 注意：优化后的 kernel 要求 x_scale 是 1D [M]
-        # 不是 [M, 1]
+        original_shape = x_fp8.shape 
+        
+        x_fp8_2d = x_fp8.view(-1, original_shape[-1])
         x_scale_1d = x_scale.view(-1)
 
         M = x_fp8_2d.shape[0]
-
-        # ------------------------------------------------------------
-        # 2. 准备输出 buffer
-        #    - decode: 复用预分配的 FP32 workspace
-        #    - prefill: 临时分配
-        # ------------------------------------------------------------
         if M <= self.max_decode_batch:
             out_fp32 = self.output_fp32_workspace[:M, :]
             out_fp32.zero_()
@@ -138,59 +154,24 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
                 dtype=torch.float32
             )
 
-        # ------------------------------------------------------------
-        # 3. 准备权重
-        #    Triton 虽然支持 stride，但这里建议 contiguous，
-        #    否则 transpose view 的访存通常不够理想
-        # ------------------------------------------------------------
-        weight_t = self.weight.t().contiguous()
-        weight_scale_t = self.weight_scale_inv.t().contiguous()
 
-        # ------------------------------------------------------------
-        # 4. 调用优化后的 Triton kernel
-        #
-        # return_bf16=False:
-        #   统一先拿到 FP32 结果，后面再加 bias，再转成 BF16
-        #   这样数值更稳，也更符合线性层常见做法
-        # ------------------------------------------------------------
+
         y_2d_fp32 = triton_fp8_block_gemm_optimized(
             x_fp8=x_fp8_2d,
-            weight_fp8=weight_t,
+            weight_fp8=self.weight_t_packed,
             x_scale=x_scale_1d,
-            weight_scale_inv=weight_scale_t,
+            weight_scale_inv=self.weight_scale_t_packed,
             out=out_fp32,
             block_size_k=128,
-            split_k=None,          # 让 launcher 自动按 M 大小选
-            return_bf16=False      # 先保持 FP32，bias 后再转 BF16
+            split_k=None,
+            return_bf16=False
         )
 
-        # ------------------------------------------------------------
-        # 5. bias 加法
-        #    先在 FP32 上加，再转 BF16
-        # ------------------------------------------------------------
         if self.bias is not None:
             y_2d_fp32 = y_2d_fp32 + self.bias
 
         y_2d_bf16 = y_2d_fp32.to(torch.bfloat16)
-
-        # ------------------------------------------------------------
-        # 6. 恢复形状
-        #    [M, N] -> [*, N]
-        # ------------------------------------------------------------
         return y_2d_bf16.view(*original_shape[:-1], -1)
-
-        # # M > 1 for prefill and multi-batch case decode
-        # if M > 1: 
-        #     x_fp8, x_scale = triton_dynamic_quantize(x_2d)
-        #     y_2d = triton_fp8_block_gemm(x_fp8, self.weight.t(), x_scale, self.weight_scale_inv.t())
-        #     if self.bias is not None:
-        #         y_2d = y_2d + self.bias
-        #     return y_2d.view(*original_shape[:-1], -1)
-        # else:
-        #     # Decode: 极致务实，Dequant Weight + 官方 BF16 Linear
-        #     weight_bf16 = self._dequantize_weight()
-        #     return F.linear(x, weight_bf16)
-
 
 class RowParallelLinear_fp8(LinearBase_fp8):
     def __init__(self, input_size: int, output_size: int, bias: bool = False):
@@ -200,28 +181,27 @@ class RowParallelLinear_fp8(LinearBase_fp8):
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         shard_size = param.data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
-        param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
+        #param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
+        local_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
+        param.data.copy_(local_weight)
+        self.weight_t_packed.copy_(local_weight.t().contiguous())
 
     def scale_loader(self, param: nn.Parameter, loaded_scale: torch.Tensor):
         shard_size = param.data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
-        param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
-
+        #param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
+        local_scale = loaded_scale.narrow(self.tp_dim, start_idx, shard_size)
+        param.data.copy_(local_scale)
+        self.weight_scale_t_packed.copy_(local_scale.t().contiguous())
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        original_shape = x_fp8.shape
+        original_shape = x.shape 
+        x_2d = x.view(-1, original_shape[-1])
+        x_fp8, x_scale = triton_dynamic_quantize(x_2d)
         x_fp8_2d = x_fp8.view(-1, original_shape[-1])
 
-        # 注意：优化后的 kernel 要求 x_scale 是 1D [M]
-        # 不是 [M, 1]
         x_scale_1d = x_scale.view(-1)
 
         M = x_fp8_2d.shape[0]
-
-        # ------------------------------------------------------------
-        # 2. 准备输出 buffer
-        #    - decode: 复用预分配的 FP32 workspace
-        #    - prefill: 临时分配
-        # ------------------------------------------------------------
         if M <= self.max_decode_batch:
             out_fp32 = self.output_fp32_workspace[:M, :]
             out_fp32.zero_()
@@ -231,49 +211,25 @@ class RowParallelLinear_fp8(LinearBase_fp8):
                 device=x_fp8.device,
                 dtype=torch.float32
             )
-
-        # ------------------------------------------------------------
-        # 3. 准备权重
-        #    Triton 虽然支持 stride，但这里建议 contiguous，
-        #    否则 transpose view 的访存通常不够理想
-        # ------------------------------------------------------------
-        weight_t = self.weight.t().contiguous()
-        weight_scale_t = self.weight_scale_inv.t().contiguous()
-
-        # ------------------------------------------------------------
-        # 4. 调用优化后的 Triton kernel
-        #
-        # return_bf16=False:
-        #   统一先拿到 FP32 结果，后面再加 bias，再转成 BF16
-        #   这样数值更稳，也更符合线性层常见做法
-        # ------------------------------------------------------------
         y_2d_fp32 = triton_fp8_block_gemm_optimized(
             x_fp8=x_fp8_2d,
-            weight_fp8=weight_t,
+            weight_fp8=self.weight_t_packed,
             x_scale=x_scale_1d,
-            weight_scale_inv=weight_scale_t,
+            weight_scale_inv=self.weight_scale_t_packed,
             out=out_fp32,
             block_size_k=128,
-            split_k=None,          # 让 launcher 自动按 M 大小选
-            return_bf16=False      # 先保持 FP32，bias 后再转 BF16
+            split_k=None,
+            return_bf16=False
         )
 
-        # ------------------------------------------------------------
-        # 5. bias 加法
-        #    先在 FP32 上加，再转 BF16
-        # ------------------------------------------------------------
         if self.bias is not None:
             y_2d_fp32 = y_2d_fp32 + self.bias
 
         y_2d_bf16 = y_2d_fp32.to(torch.bfloat16)
         if self.tp_size > 1:
             dist.all_reduce(y_2d_bf16)
-
-        # ------------------------------------------------------------
-        # 6. 恢复形状
-        #    [M, N] -> [*, N]
-        # ------------------------------------------------------------
         return y_2d_bf16.view(*original_shape[:-1], -1)
+
 
 # ==========================================
 # 3. Fused Kernels: Merged & QKV
@@ -289,7 +245,7 @@ class MergedColumnParallelLinear_fp8(ColumnParallelLinear_fp8):
         param_data = param.data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
         param_data.copy_(loaded_weight)
-
+        self.refresh_packed_weight_views()
     def scale_loader(self, param: nn.Parameter, loaded_scale: torch.Tensor, loaded_shard_id: int):
         base_offset = sum(self.output_sizes[:loaded_shard_id]) // self.tp_size
         base_size = self.output_sizes[loaded_shard_id] // self.tp_size
@@ -300,7 +256,7 @@ class MergedColumnParallelLinear_fp8(ColumnParallelLinear_fp8):
         param_data = param.data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_scale = loaded_scale.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
         param_data.copy_(loaded_scale)
-
+        self.refresh_packed_weight_views()
 
 
 class QKVParallelLinear_fp8(ColumnParallelLinear_fp8):
@@ -326,7 +282,7 @@ class QKVParallelLinear_fp8(ColumnParallelLinear_fp8):
         param_data = param.data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
         param_data.copy_(loaded_weight)
-
+        self.refresh_packed_weight_views()
     def scale_loader(self, param: nn.Parameter, loaded_scale: torch.Tensor, loaded_shard_id: str):
         base_offset, base_size = self._get_qkv_bounds(loaded_shard_id)
     
@@ -335,4 +291,5 @@ class QKVParallelLinear_fp8(ColumnParallelLinear_fp8):
         
         param_data = param.data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_scale = loaded_scale.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
-        param_data.copy_(loaded_scale)
+        param_data.copy_(loaded_scale)      
+        self.refresh_packed_weight_views() # ⬅️ 补上这行

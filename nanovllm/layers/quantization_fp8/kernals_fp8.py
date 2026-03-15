@@ -176,73 +176,73 @@ def fp8_split_k_gemm_kernel(
 # # ==========================================
 # # 智能启动器 (The Smart Launcher)
 # # ==========================================
-# def triton_fp8_block_gemm(
-#     x_fp8: torch.Tensor, 
-#     weight_fp8: torch.Tensor, 
-#     x_scale: torch.Tensor, 
-#     weight_scale_inv: torch.Tensor, 
-#     output_fp32: torch.Tensor,
-#     block_size_k: int = 128
-# ) -> torch.Tensor:
+def triton_fp8_block_gemm(
+    x_fp8: torch.Tensor, 
+    weight_fp8: torch.Tensor, 
+    x_scale: torch.Tensor, 
+    weight_scale_inv: torch.Tensor, 
+    output_fp32: torch.Tensor,
+    block_size_k: int = 128
+) -> torch.Tensor:
 
-#     M, K = x_fp8.shape
-#     K_w, N = weight_fp8.shape
-#     assert K == K_w
+    M, K = x_fp8.shape
+    K_w, N = weight_fp8.shape
+    assert K == K_w
     
-#     if M <= 32: 
-#         # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
-#         SPLIT_K = 2 # default 16
-#         BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
-#         BLOCK_SIZE_N = 128 # default 128
-#         num_stages = 4 
-#         num_warps = 8
-#     else:
-#         # Prefill 阶段：矩阵巨大，GPU 已经忙不过来了，禁止切分 K，减少原子加法冲突！
-#         SPLIT_K = 1
-#         BLOCK_SIZE_M = 128
-#         BLOCK_SIZE_N = 128
-#         num_stages = 3
-#         num_warps = 8
+    if M <= 32: 
+        # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
+        SPLIT_K = 2 # default 16
+        BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
+        BLOCK_SIZE_N = 128 # default 128
+        num_stages = 4 
+        num_warps = 8
+    else:
+        # Prefill 阶段：矩阵巨大，GPU 已经忙不过来了，禁止切分 K，减少原子加法冲突！
+        SPLIT_K = 1
+        BLOCK_SIZE_M = 128
+        BLOCK_SIZE_N = 128
+        num_stages = 3
+        num_warps = 8
     
-#     # # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
-#     # SPLIT_K = 16 # default 16
-#     # BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
-#     # BLOCK_SIZE_N = 128 # default 128
-#     # num_stages = 4 
-#     # num_warps = 4
+    # # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
+    # SPLIT_K = 16 # default 16
+    # BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
+    # BLOCK_SIZE_N = 128 # default 128
+    # num_stages = 4 
+    # num_warps = 4
     
-#     BLOCK_SIZE_K = block_size_k
+    BLOCK_SIZE_K = block_size_k
 
-#     # -------------------------------------------------------------
-#     # 🚨 极其关键的安全设计：输出坑位必须是 ZERO 初始化的 FP32！
-#     # 因为底层有多个线程块用 Atomic Add 往里累加，如果不清零，结果会带上显存垃圾。
-#     # 用 FP32 累加能保证精度绝对不掉，算完再转 BF16。
-#     # -------------------------------------------------------------
+    # -------------------------------------------------------------
+    # 🚨 极其关键的安全设计：输出坑位必须是 ZERO 初始化的 FP32！
+    # 因为底层有多个线程块用 Atomic Add 往里累加，如果不清零，结果会带上显存垃圾。
+    # 用 FP32 累加能保证精度绝对不掉，算完再转 BF16。
+    # -------------------------------------------------------------
    
 
-#     grid = (
-#         triton.cdiv(M, BLOCK_SIZE_M),
-#         triton.cdiv(N, BLOCK_SIZE_N),
-#         SPLIT_K  # 第三维度的网格数量！
-#     )
+    grid = (
+        triton.cdiv(M, BLOCK_SIZE_M),
+        triton.cdiv(N, BLOCK_SIZE_N),
+        SPLIT_K  # 第三维度的网格数量！
+    )
 
-#     fp8_split_k_gemm_kernel[grid](
-#         x_fp8, weight_fp8, output_fp32, x_scale, weight_scale_inv,
-#         M, N, K,
-#         x_fp8.stride(0), x_fp8.stride(1),
-#         weight_fp8.stride(0), weight_fp8.stride(1),
-#         output_fp32.stride(0), output_fp32.stride(1),
-#         weight_scale_inv.stride(0), weight_scale_inv.stride(1),
-#         BLOCK_SIZE_M=BLOCK_SIZE_M,
-#         BLOCK_SIZE_N=BLOCK_SIZE_N,
-#         BLOCK_SIZE_K=BLOCK_SIZE_K,
-#         SPLIT_K=SPLIT_K,
-#         num_warps=num_warps,
-#         num_stages = num_stages
-#     )
+    fp8_split_k_gemm_kernel[grid](
+        x_fp8, weight_fp8, output_fp32, x_scale, weight_scale_inv,
+        M, N, K,
+        x_fp8.stride(0), x_fp8.stride(1),
+        weight_fp8.stride(0), weight_fp8.stride(1),
+        output_fp32.stride(0), output_fp32.stride(1),
+        weight_scale_inv.stride(0), weight_scale_inv.stride(1),
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+        SPLIT_K=SPLIT_K,
+        num_warps=num_warps,
+        num_stages = num_stages
+    )
 
-#     # 累加完毕，完美降维回 BF16 送给下一层网络
-#     return output_fp32.to(torch.bfloat16)
+    # 累加完毕，完美降维回 BF16 送给下一层网络
+    return output_fp32.to(torch.bfloat16)
 
 
 
@@ -424,7 +424,7 @@ def _compute_pid_mn(
 
 @triton.autotune(
     configs=_PREFILL_CONFIGS,
-    key=["M", "N", "K"],
+    key=["N", "K"],
 )
 @triton.jit
 def fp8_block_gemm_prefill_kernel(
@@ -519,7 +519,7 @@ def fp8_block_gemm_prefill_kernel(
 
 @triton.autotune(
     configs=_DECODE_CONFIGS,
-    key=["M", "N", "K", "SPLIT_K"],
+    key=["N", "K", "SPLIT_K"],
 )
 @triton.jit
 def fp8_block_gemm_splitk_kernel(
@@ -668,7 +668,7 @@ def triton_fp8_block_gemm_optimized(
             weight_fp8.stride(0), weight_fp8.stride(1),
             out.stride(0), out.stride(1),
             weight_scale_inv.stride(0), weight_scale_inv.stride(1),
-            BLOCK_SIZE_K=block_size_k,
+            # BLOCK_SIZE_K=block_size_k,
             OUT_DTYPE_BF16=(out.dtype == torch.bfloat16),
         )
         return out
@@ -696,7 +696,7 @@ def triton_fp8_block_gemm_optimized(
         weight_fp8.stride(0), weight_fp8.stride(1),
         out_fp32.stride(0), out_fp32.stride(1),
         weight_scale_inv.stride(0), weight_scale_inv.stride(1),
-        BLOCK_SIZE_K=block_size_k,
+        #BLOCK_SIZE_K=block_size_k,
         SPLIT_K=split_k,
     )
 
