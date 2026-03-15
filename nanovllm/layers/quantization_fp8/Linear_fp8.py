@@ -3,7 +3,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
-from .kernals_fp8 import triton_dynamic_quantize, triton_fp8_block_gemm, triton_dequantize_weight
+from .kernals_fp8 import triton_dynamic_quantize, triton_fp8_block_gemm_optimized, triton_dequantize_weight
 
 
 
@@ -116,29 +116,67 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
     def forward(self, x_fp8: torch.Tensor, x_scale: torch.Tensor) -> torch.Tensor:
         original_shape = x_fp8.shape
         x_fp8_2d = x_fp8.view(-1, original_shape[-1])
-        x_scale_2d = x_scale.view(-1, 1) # 确保 scale 也是 2D [M, 1]
+
+        # 注意：优化后的 kernel 要求 x_scale 是 1D [M]
+        # 不是 [M, 1]
+        x_scale_1d = x_scale.view(-1)
 
         M = x_fp8_2d.shape[0]
+
+        # ------------------------------------------------------------
+        # 2. 准备输出 buffer
+        #    - decode: 复用预分配的 FP32 workspace
+        #    - prefill: 临时分配
+        # ------------------------------------------------------------
         if M <= self.max_decode_batch:
-            # Decode 阶段：从霸占好的显存里切出前 M 行
             out_fp32 = self.output_fp32_workspace[:M, :]
-            # zero_() 是原位操作 (In-place)，极快，不会触发内存重新分配！
             out_fp32.zero_()
         else:
-            # Prefill 阶段：因为 M 很大（Seq_len * Batch），只能临时分配
-            out_fp32 = torch.empty((M, self.output_size), device=x_fp8.device, dtype=torch.float32)
+            out_fp32 = torch.empty(
+                (M, self.output_size),
+                device=x_fp8.device,
+                dtype=torch.float32
+            )
 
-        y_2d = triton_fp8_block_gemm(
-            x_fp8_2d, 
-            self.weight.t(), 
-            x_scale_2d, 
-            self.weight_scale_inv.t(), 
-            output_fp32=out_fp32 # 传进去
+        # ------------------------------------------------------------
+        # 3. 准备权重
+        #    Triton 虽然支持 stride，但这里建议 contiguous，
+        #    否则 transpose view 的访存通常不够理想
+        # ------------------------------------------------------------
+        weight_t = self.weight.t().contiguous()
+        weight_scale_t = self.weight_scale_inv.t().contiguous()
+
+        # ------------------------------------------------------------
+        # 4. 调用优化后的 Triton kernel
+        #
+        # return_bf16=False:
+        #   统一先拿到 FP32 结果，后面再加 bias，再转成 BF16
+        #   这样数值更稳，也更符合线性层常见做法
+        # ------------------------------------------------------------
+        y_2d_fp32 = triton_fp8_block_gemm_optimized(
+            x_fp8=x_fp8_2d,
+            weight_fp8=weight_t,
+            x_scale=x_scale_1d,
+            weight_scale_inv=weight_scale_t,
+            out=out_fp32,
+            block_size_k=128,
+            split_k=None,          # 让 launcher 自动按 M 大小选
+            return_bf16=False      # 先保持 FP32，bias 后再转 BF16
         )
 
-        y_2d_bf16 = y_2d.to(torch.bfloat16)
+        # ------------------------------------------------------------
+        # 5. bias 加法
+        #    先在 FP32 上加，再转 BF16
+        # ------------------------------------------------------------
         if self.bias is not None:
-            y_2d_bf16 = y_2d_bf16 + self.bias
+            y_2d_fp32 = y_2d_fp32 + self.bias
+
+        y_2d_bf16 = y_2d_fp32.to(torch.bfloat16)
+
+        # ------------------------------------------------------------
+        # 6. 恢复形状
+        #    [M, N] -> [*, N]
+        # ------------------------------------------------------------
         return y_2d_bf16.view(*original_shape[:-1], -1)
 
         # # M > 1 for prefill and multi-batch case decode
@@ -170,45 +208,72 @@ class RowParallelLinear_fp8(LinearBase_fp8):
         param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        original_shape = x.shape 
-        x_2d = x.view(-1, original_shape[-1])
-        x_fp8, x_scale = triton_dynamic_quantize(x_2d)
+        original_shape = x_fp8.shape
         x_fp8_2d = x_fp8.view(-1, original_shape[-1])
-        x_scale_2d = x_scale.view(-1, 1) # 确保 scale 也是 2D [M, 1]
-        M = x_fp8_2d.shape[0]
-        # #if M <= self.max_decode_batch:
-        # # Decode 阶段：从霸占好的显存里切出前 M 行
-        # out_fp32 = self.output_fp32_workspace[:M, :]
-        # # zero_() 是原位操作 (In-place)，极快，不会触发内存重新分配！
-        # out_fp32.zero_()
-        # # else:
-        # #     # Prefill 阶段：因为 M 很大（Seq_len * Batch），只能临时分配
-        # #     out_fp32 = torch.empty((M, self.output_size), device=x_fp8.device, dtype=torch.float32)
 
-        # 2. [🚨 重要修复] 显存分配逻辑：防止 Prefill 阶段维度坍塌
+        # 注意：优化后的 kernel 要求 x_scale 是 1D [M]
+        # 不是 [M, 1]
+        x_scale_1d = x_scale.view(-1)
+
+        M = x_fp8_2d.shape[0]
+
+        # ------------------------------------------------------------
+        # 2. 准备输出 buffer
+        #    - decode: 复用预分配的 FP32 workspace
+        #    - prefill: 临时分配
+        # ------------------------------------------------------------
         if M <= self.max_decode_batch:
-            # Decode 阶段：使用预分配的 Workspace
             out_fp32 = self.output_fp32_workspace[:M, :]
             out_fp32.zero_()
         else:
-            # Prefill 阶段：分配临时显存，大小必须是 [M, output_size]
-            out_fp32 = torch.empty((M, self.output_size), device=x.device, dtype=torch.float32)
+            out_fp32 = torch.empty(
+                (M, self.output_size),
+                device=x_fp8.device,
+                dtype=torch.float32
+            )
 
-        y_2d = triton_fp8_block_gemm(
-            x_fp8_2d, 
-            self.weight.t(), 
-            x_scale_2d, 
-            self.weight_scale_inv.t(), 
-            output_fp32=out_fp32 # 传进去
+        # ------------------------------------------------------------
+        # 3. 准备权重
+        #    Triton 虽然支持 stride，但这里建议 contiguous，
+        #    否则 transpose view 的访存通常不够理想
+        # ------------------------------------------------------------
+        weight_t = self.weight.t().contiguous()
+        weight_scale_t = self.weight_scale_inv.t().contiguous()
+
+        # ------------------------------------------------------------
+        # 4. 调用优化后的 Triton kernel
+        #
+        # return_bf16=False:
+        #   统一先拿到 FP32 结果，后面再加 bias，再转成 BF16
+        #   这样数值更稳，也更符合线性层常见做法
+        # ------------------------------------------------------------
+        y_2d_fp32 = triton_fp8_block_gemm_optimized(
+            x_fp8=x_fp8_2d,
+            weight_fp8=weight_t,
+            x_scale=x_scale_1d,
+            weight_scale_inv=weight_scale_t,
+            out=out_fp32,
+            block_size_k=128,
+            split_k=None,          # 让 launcher 自动按 M 大小选
+            return_bf16=False      # 先保持 FP32，bias 后再转 BF16
         )
 
-       
-        y_2d_bf16 = y_2d.to(torch.bfloat16)
+        # ------------------------------------------------------------
+        # 5. bias 加法
+        #    先在 FP32 上加，再转 BF16
+        # ------------------------------------------------------------
+        if self.bias is not None:
+            y_2d_fp32 = y_2d_fp32 + self.bias
+
+        y_2d_bf16 = y_2d_fp32.to(torch.bfloat16)
         if self.tp_size > 1:
             dist.all_reduce(y_2d_bf16)
 
-        y = y_2d_bf16.view(*original_shape[:-1], -1)
-        return y
+        # ------------------------------------------------------------
+        # 6. 恢复形状
+        #    [M, N] -> [*, N]
+        # ------------------------------------------------------------
+        return y_2d_bf16.view(*original_shape[:-1], -1)
 
 # ==========================================
 # 3. Fused Kernels: Merged & QKV

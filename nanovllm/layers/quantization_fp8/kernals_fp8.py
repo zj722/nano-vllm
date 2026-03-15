@@ -147,7 +147,7 @@ def fp8_split_k_gemm_kernel(
         
         # 硬件 FP8 乘法
         local_acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-        local_acc += tl.dot(a, b, out_dtype=tl.float32)
+        local_acc += tl.dot(a, b,local_acc,  out_dtype=tl.float32)
         local_acc = local_acc * b_scale
         
         acc += local_acc
@@ -160,278 +160,89 @@ def fp8_split_k_gemm_kernel(
     mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
 
 
-    tl.atomic_add(c_ptrs, acc, mask=mask)
-    # if SPLIT_K == 1:
-    #     # 🚀 PREFILL 模式 (大矩阵)：
-    #     # 没有多 Block 竞争，不用原子加法！
-    #     # 在寄存器里直接转成 BF16，然后暴力覆盖写入目标显存
-    #     c_bf16 = acc.to(tl.bfloat16)
-    #     tl.store(c_ptrs, c_bf16, mask=mask)
-    # else:
-    #     # 🏎️ DECODE 模式 (小矩阵)：
-    #     # K 被切碎了，必须用高精度 FP32 做原子加法，防止精度爆炸
-    #     tl.atomic_add(c_ptrs, acc, mask=mask)
-
-
-# ==========================================
-# 智能启动器 (The Smart Launcher)
-# ==========================================
-def triton_fp8_block_gemm(
-    x_fp8: torch.Tensor, 
-    weight_fp8: torch.Tensor, 
-    x_scale: torch.Tensor, 
-    weight_scale_inv: torch.Tensor, 
-    output_fp32: torch.Tensor,
-    block_size_k: int = 128
-) -> torch.Tensor:
-
-    M, K = x_fp8.shape
-    K_w, N = weight_fp8.shape
-    assert K == K_w
-    
-    if M <= 32: 
-        # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
-        SPLIT_K = 2 # default 16
-        BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
-        BLOCK_SIZE_N = 128 # default 128
-        num_stages = 4 
-        num_warps = 4
+    #tl.atomic_add(c_ptrs, acc, mask=mask)
+    if SPLIT_K == 1:
+        # 🚀 PREFILL 模式 (大矩阵)：
+        # 没有多 Block 竞争，不用原子加法！
+        # 在寄存器里直接转成 BF16，然后暴力覆盖写入目标显存
+        c_bf16 = acc.to(tl.bfloat16)
+        tl.store(c_ptrs, c_bf16, mask=mask)
     else:
-        # Prefill 阶段：矩阵巨大，GPU 已经忙不过来了，禁止切分 K，减少原子加法冲突！
-        SPLIT_K = 1
-        BLOCK_SIZE_M = 128
-        BLOCK_SIZE_N = 128
-        num_stages = 3
-        num_warps = 8
-    
-    # # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
-    # SPLIT_K = 16 # default 16
-    # BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
-    # BLOCK_SIZE_N = 128 # default 128
-    # num_stages = 4 
-    # num_warps = 4
-    
-    BLOCK_SIZE_K = block_size_k
-
-    # -------------------------------------------------------------
-    # 🚨 极其关键的安全设计：输出坑位必须是 ZERO 初始化的 FP32！
-    # 因为底层有多个线程块用 Atomic Add 往里累加，如果不清零，结果会带上显存垃圾。
-    # 用 FP32 累加能保证精度绝对不掉，算完再转 BF16。
-    # -------------------------------------------------------------
-   
-
-    grid = (
-        triton.cdiv(M, BLOCK_SIZE_M),
-        triton.cdiv(N, BLOCK_SIZE_N),
-        SPLIT_K  # 第三维度的网格数量！
-    )
-
-    fp8_split_k_gemm_kernel[grid](
-        x_fp8, weight_fp8, output_fp32, x_scale, weight_scale_inv,
-        M, N, K,
-        x_fp8.stride(0), x_fp8.stride(1),
-        weight_fp8.stride(0), weight_fp8.stride(1),
-        output_fp32.stride(0), output_fp32.stride(1),
-        weight_scale_inv.stride(0), weight_scale_inv.stride(1),
-        BLOCK_SIZE_M=BLOCK_SIZE_M,
-        BLOCK_SIZE_N=BLOCK_SIZE_N,
-        BLOCK_SIZE_K=BLOCK_SIZE_K,
-        SPLIT_K=SPLIT_K,
-        num_warps=num_warps
-    )
-
-    # 累加完毕，完美降维回 BF16 送给下一层网络
-    return output_fp32.to(torch.bfloat16)
+        # 🏎️ DECODE 模式 (小矩阵)：
+        # K 被切碎了，必须用高精度 FP32 做原子加法，防止精度爆炸
+        tl.atomic_add(c_ptrs, acc, mask=mask)
 
 
-
-
-
-# """
-# m = seq_Len * batch
-# k = hidden_size
-# n = 
-# """
-# @triton.autotune(
-#     configs=[
-#         # 偏向 Prefill 的大 Block 配置 (需要更多 SRAM，需要更多 stages 来掩盖延迟)
-#         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128}, num_stages=3, num_warps=8),
-#         triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128}, num_stages=3, num_warps=8),
-#         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128}, num_stages=4, num_warps=4),
-        
-#         # 偏向 Decode 的小 Block 配置
-#         triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 128}, num_stages=4, num_warps=4),
-#         triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 128}, num_stages=4, num_warps=4),
-#     ],
-#     key=['M', 'N', 'K'], # 当这三个维度发生变化时，重新寻找最优解
-# )
-# @triton.jit
-# def fp8_block_gemm_kernel(
-#     # 1. 内存指针 (Pointers)
-#     a_ptr,          # 激活值 X_fp8，形状 [M, K]
-#     b_ptr,          # 权重 W_fp8，形状 [K, N] (假设已转置方便读取)
-#     c_ptr,          # 输出 Y_bf16，形状 [M, N]
-#     a_scale_ptr,    # 激活值 Scale，形状 [M, 1]
-#     b_scale_ptr,    # 权重 Block Scale，形状 [K//128, N//128]
-
-#     M, N, K,
-
-#     # software defined task row size, may need multiple round for same block to execute.
-#     stride_am, stride_ak,
-#     stride_bk, stride_bn,
-#     stride_cm, stride_cn,
-#     stride_b_scale_k, stride_b_scale_n, # 权重 scale 的步长
-
-#     BLOCK_SIZE_M: tl.constexpr, 
-#     BLOCK_SIZE_N: tl.constexpr, 
-#     BLOCK_SIZE_K: tl.constexpr, # set to 128, same to scaling scheme.
-# ):
-#     pid_m = tl.program_id(axis=0)
-#     pid_n = tl.program_id(axis=1)
-    
-#     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-#     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    
-#     # -----------------------------------------------------------
-#     # 阶段 2：提前加载属于这几行的 Activation Scale
-#     # 因为 x_scale 是 per-token 的，它只跟 M (行号) 有关，整个 K 循环中都不变
-#     # -----------------------------------------------------------
-#     a_scale_ptrs = a_scale_ptr + offs_m
-#     # a_scale is on sram
-#     a_scale = tl.load(a_scale_ptrs, mask=offs_m < M, other=0.0) 
-#     # 将形状从 [BLOCK_M] 变为 [BLOCK_M, 1]，方便后续做矩阵乘法时的广播
-#     a_scale = tl.expand_dims(a_scale, 1)
-
-#     # -----------------------------------------------------------
-#     # 阶段 3：创建总累加器 (FP32 寄存器)
-#     # -----------------------------------------------------------
-#     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    
-#     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-#         # 计算当前这块 K 的偏移量
-#         offs_k = k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
-        
-#         # 1. 计算内存地址并加载 FP8 的 A 块和 B 块
-#         """
-#         broadcast add
-#         A is a column vector, 
-#         B is a row vector
-#         A will expand itself to a square horizontally,
-#         B will expand it self to a square vertically
-#         finally do a elementwise add.
-#         """
-#         a_ptrs = a_ptr + (offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak)
-#         b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn)
-        
-#         # 从显存读入缓存，明确告诉 Triton 这是 FP8 格式
-#         a = tl.load(a_ptrs, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K), other=0.0)
-#         b = tl.load(b_ptrs, mask=(offs_k[:, None] < K) & (offs_n[None, :] < N), other=0.0)
-        
-#         # 2. 加载当前这 128x128 块对应的 Weight Block Scale!
-#         # 因为权重 Scale 也是按块存的，这里的索引计算非常精妙
-#         b_scale_ptrs = b_scale_ptr + (k * stride_b_scale_k + pid_n * stride_b_scale_n)
-#         # 读出一个单一的 float32 数值 (当前这 128x128 块的灵魂缩放因子)
-#         b_scale = tl.load(b_scale_ptrs)
-        
-#         # 3. 硬件级魔法：FP8 的矩阵乘法！
-#         # 结果 local_acc 是 [BLOCK_M, BLOCK_N] 大小的 FP32 寄存器矩阵
-#         local_acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-#         local_acc += tl.dot(a, b, out_dtype=tl.float32)
-        
-#         # 4. 乘上局部的 Weight Scale (在高速缓存中进行，不碰显存)
-#         local_acc = local_acc * b_scale
-        
-#         # 5. 累加到全局的累加器中
-#         acc += local_acc
-
-#     # -----------------------------------------------------------
-#     # 阶段 5：Epilogue (收尾：乘上输入 Scale，转回 BF16 并写回显存)
-#     # -----------------------------------------------------------
-#     # 乘上阶段 2 提前准备好的 Activation Scale
-#     acc = acc * a_scale
-    
-#     # 将最终结果强转回 BF16
-#     c = acc.to(tl.bfloat16)
-    
-#     # 计算输出矩阵 C 的内存地址并写回
-#     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-#     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-#     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
-#     tl.store(c_ptrs, c, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N))
-
-
-
-
+# # ==========================================
+# # 智能启动器 (The Smart Launcher)
+# # ==========================================
 # def triton_fp8_block_gemm(
-#     x_fp8: torch.Tensor,               # 激活值 X: [M, K], float8_e4m3fn
-#     weight_fp8: torch.Tensor,          # 权重 W: [K, N], float8_e4m3fn (注意：如果是 PyTorch Linear 的权重，请传 weight.t() 进来)
-#     x_scale: torch.Tensor,             # 激活值 Scale: [M, 1], float32
-#     weight_scale_inv: torch.Tensor,    # 权重 Block Scale: [K//128, N//128], float32
-#     block_size_k: int = 128            # 你的分块大小
+#     x_fp8: torch.Tensor, 
+#     weight_fp8: torch.Tensor, 
+#     x_scale: torch.Tensor, 
+#     weight_scale_inv: torch.Tensor, 
+#     output_fp32: torch.Tensor,
+#     block_size_k: int = 128
 # ) -> torch.Tensor:
-    
-#     # -----------------------------------------------------------------
-#     # 1. 获取物理维度并进行严格的防御性检查 (Sanity Checks)
-#     # -----------------------------------------------------------------
+
 #     M, K = x_fp8.shape
 #     K_w, N = weight_fp8.shape
+#     assert K == K_w
     
-#     assert K == K_w, f"维度不匹配: X 的列数({K}) 必须等于 W 的行数({K_w})"
-#     assert x_fp8.dtype == torch.float8_e4m3fn, "X 必须是 float8_e4m3fn"
-#     assert weight_fp8.dtype == torch.float8_e4m3fn, "W 必须是 float8_e4m3fn"
-#     assert x_scale.dtype == torch.float32, "x_scale 必须是 float32"
-#     assert weight_scale_inv.dtype == torch.float32, "weight_scale_inv 必须是 float32"
+#     if M <= 32: 
+#         # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
+#         SPLIT_K = 2 # default 16
+#         BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
+#         BLOCK_SIZE_N = 128 # default 128
+#         num_stages = 4 
+#         num_warps = 8
+#     else:
+#         # Prefill 阶段：矩阵巨大，GPU 已经忙不过来了，禁止切分 K，减少原子加法冲突！
+#         SPLIT_K = 1
+#         BLOCK_SIZE_M = 128
+#         BLOCK_SIZE_N = 128
+#         num_stages = 3
+#         num_warps = 8
     
-#     # -----------------------------------------------------------------
-#     # 2. 为 Kernel 准备输出的“空坑位”
-#     # Triton 不会帮你 return 数据，你必须提前在显存里划好一块地盘
-#     # -----------------------------------------------------------------
-#     output_bf16 = torch.empty((M, N), device=x_fp8.device, dtype=torch.bfloat16)
+#     # # Decode 阶段：矩阵极小，必须把 K 切碎来唤醒所有 GPU 核心！
+#     # SPLIT_K = 16 # default 16
+#     # BLOCK_SIZE_M = 16   # 缩小 M 块尺寸，减少无效线程
+#     # BLOCK_SIZE_N = 128 # default 128
+#     # num_stages = 4 
+#     # num_warps = 4
     
-#     # -----------------------------------------------------------------
-#     # 3. 定义 Grid (计算网格：告诉 GPU 派多少个线程块去干活)
-#     # -----------------------------------------------------------------
-#     # triton.cdiv 是向上取整除法 (Ceil Divide)，比如 M=130, BLOCK_M=128，会分配 2 个 Block
-#     def grid(META):
-#         return (
-#             triton.cdiv(M, META['BLOCK_SIZE_M']), 
-#             triton.cdiv(N, META['BLOCK_SIZE_N']),
-#         )
-    
-#     # -----------------------------------------------------------------
-#     # 4. 召唤 Kernel，移交全部参数与指针！
-#     # -----------------------------------------------------------------
-#     fp8_block_gemm_kernel[grid](
-#         # --- 传递数据指针 ---
-#         a_ptr=x_fp8,
-#         b_ptr=weight_fp8,
-#         c_ptr=output_bf16,
-#         a_scale_ptr=x_scale,
-#         b_scale_ptr=weight_scale_inv,
-        
-#         # --- 传递形状维度 ---
-#         M=M, N=N, K=K,
-        
-#         # --- 传递物理内存步长 (Strides) ---
-#         # .stride(0) 告诉 Triton 跳到下一行要跨过多少元素
-#         # .stride(1) 告诉 Triton 跳到下一列要跨过多少元素
-#         stride_am=x_fp8.stride(0), stride_ak=x_fp8.stride(1),
-#         stride_bk=weight_fp8.stride(0), stride_bn=weight_fp8.stride(1),
-#         stride_cm=output_bf16.stride(0), stride_cn=output_bf16.stride(1),
-#         stride_b_scale_k=weight_scale_inv.stride(0), 
-#         stride_b_scale_n=weight_scale_inv.stride(1),
-        
-#         # # --- 传递编译期常量 (Meta-parameters) ---
-#         # # 这些数字决定了 Triton 在底层申请多大的共享内存 (SRAM)
-#         # # 对于 FP8 计算，128x128 是最能跑满 Tensor Core 带宽的黄金比例
-#         # BLOCK_SIZE_M=128,
-#         # BLOCK_SIZE_N=128,
-#         # BLOCK_SIZE_K=block_size_k,
-#     )
-    
-#     # 5. 满载着计算结果的坑位现在可以作为返回值交还给 PyTorch 了
-#     return output_bf16
+#     BLOCK_SIZE_K = block_size_k
 
+#     # -------------------------------------------------------------
+#     # 🚨 极其关键的安全设计：输出坑位必须是 ZERO 初始化的 FP32！
+#     # 因为底层有多个线程块用 Atomic Add 往里累加，如果不清零，结果会带上显存垃圾。
+#     # 用 FP32 累加能保证精度绝对不掉，算完再转 BF16。
+#     # -------------------------------------------------------------
+   
+
+#     grid = (
+#         triton.cdiv(M, BLOCK_SIZE_M),
+#         triton.cdiv(N, BLOCK_SIZE_N),
+#         SPLIT_K  # 第三维度的网格数量！
+#     )
+
+#     fp8_split_k_gemm_kernel[grid](
+#         x_fp8, weight_fp8, output_fp32, x_scale, weight_scale_inv,
+#         M, N, K,
+#         x_fp8.stride(0), x_fp8.stride(1),
+#         weight_fp8.stride(0), weight_fp8.stride(1),
+#         output_fp32.stride(0), output_fp32.stride(1),
+#         weight_scale_inv.stride(0), weight_scale_inv.stride(1),
+#         BLOCK_SIZE_M=BLOCK_SIZE_M,
+#         BLOCK_SIZE_N=BLOCK_SIZE_N,
+#         BLOCK_SIZE_K=BLOCK_SIZE_K,
+#         SPLIT_K=SPLIT_K,
+#         num_warps=num_warps,
+#         num_stages = num_stages
+#     )
+
+#     # 累加完毕，完美降维回 BF16 送给下一层网络
+#     return output_fp32.to(torch.bfloat16)
 
 
 
@@ -498,3 +309,397 @@ def triton_dequantize_weight(weight_fp8: torch.Tensor, scale_inv: torch.Tensor, 
     )
 
     return output_bf16
+
+
+
+
+
+# ============================================================
+# autotune configs
+# ============================================================
+
+_PREFILL_CONFIGS = [
+    triton.Config(
+        {
+            "BLOCK_SIZE_M": 128,
+            "BLOCK_SIZE_N": 128,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 8,
+        },
+        num_warps=8,
+        num_stages=3,
+    ),
+    triton.Config(
+        {
+            "BLOCK_SIZE_M": 64,
+            "BLOCK_SIZE_N": 128,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 8,
+        },
+        num_warps=8,
+        num_stages=4,
+    ),
+    triton.Config(
+        {
+            "BLOCK_SIZE_M": 128,
+            "BLOCK_SIZE_N": 64,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 8,
+        },
+        num_warps=4,
+        num_stages=4,
+    ),
+    triton.Config(
+        {
+            "BLOCK_SIZE_M": 64,
+            "BLOCK_SIZE_N": 64,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 8,
+        },
+        num_warps=4,
+        num_stages=4,
+    ),
+]
+
+_DECODE_CONFIGS = [
+    triton.Config(
+        {
+            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_N": 128,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 8,
+        },
+        num_warps=4,
+        num_stages=4,
+    ),
+    triton.Config(
+        {
+            "BLOCK_SIZE_M": 32,
+            "BLOCK_SIZE_N": 128,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 8,
+        },
+        num_warps=4,
+        num_stages=4,
+    ),
+    triton.Config(
+        {
+            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_N": 64,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 8,
+        },
+        num_warps=4,
+        num_stages=5,
+    ),
+]
+
+
+# ============================================================
+# helper: grouped pid mapping for better L2 locality
+# Triton matmul tutorial style
+# ============================================================
+
+@triton.jit
+def _compute_pid_mn(
+    pid,
+    num_pid_m,
+    num_pid_n,
+    GROUP_SIZE_M: tl.constexpr,
+):
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    group_id = pid // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = tl.minimum(num_pid_m - first_pid_m, GROUP_SIZE_M)
+
+    pid_m = first_pid_m + (pid % group_size_m)
+    pid_n = (pid % num_pid_in_group) // group_size_m
+    return pid_m, pid_n
+
+
+# ============================================================
+# Prefill kernel: SPLIT_K == 1
+# No atomic
+# ============================================================
+
+@triton.autotune(
+    configs=_PREFILL_CONFIGS,
+    key=["M", "N", "K"],
+)
+@triton.jit
+def fp8_block_gemm_prefill_kernel(
+    # pointers
+    a_ptr, b_ptr, c_ptr,
+    a_scale_ptr, b_scale_ptr,
+
+    # shapes
+    M, N, K,
+
+    # strides
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    stride_b_scale_k, stride_b_scale_n,
+
+    # compile-time constants
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
+    OUT_DTYPE_BF16: tl.constexpr,
+):
+    pid = tl.program_id(0)
+
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    pid_m, pid_n = _compute_pid_mn(pid, num_pid_m, num_pid_n, GROUP_SIZE_M)
+
+    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_k = tl.arange(0, BLOCK_SIZE_K)
+
+    tl.multiple_of(offs_k, 8)
+    tl.max_contiguous(offs_m, BLOCK_SIZE_M)
+    tl.max_contiguous(offs_n, BLOCK_SIZE_N)
+
+    a_scale = tl.load(a_scale_ptr + offs_m, mask=offs_m < M, other=0.0)
+    a_scale = a_scale[:, None]
+
+    acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+    # base pointers
+    a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+    b_ptrs = b_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+    num_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
+    scale_n_idx = (pid_n * BLOCK_SIZE_N) // 128
+
+    for k_tile in range(0, num_k_tiles):
+        k_offsets = k_tile * BLOCK_SIZE_K + offs_k
+
+        a = tl.load(
+            a_ptrs,
+            mask=(offs_m[:, None] < M) & (k_offsets[None, :] < K),
+            other=0.0,
+        )
+        b = tl.load(
+            b_ptrs,
+            mask=(k_offsets[:, None] < K) & (offs_n[None, :] < N),
+            other=0.0,
+        )
+
+        scale_k_idx = (k_tile * BLOCK_SIZE_K) // 128
+        b_scale = tl.load(
+            b_scale_ptr + scale_k_idx * stride_b_scale_k + scale_n_idx * stride_b_scale_n
+        )
+
+        # same math as your original kernel
+        acc += tl.dot(a, b, out_dtype=tl.float32) * b_scale
+
+        a_ptrs += BLOCK_SIZE_K * stride_ak
+        b_ptrs += BLOCK_SIZE_K * stride_bk
+
+    acc = acc * a_scale
+
+    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+
+    if OUT_DTYPE_BF16:
+        tl.store(c_ptrs, acc.to(tl.bfloat16), mask=c_mask)
+    else:
+        tl.store(c_ptrs, acc, mask=c_mask)
+
+
+# ============================================================
+# Decode kernel: SPLIT_K > 1
+# atomic add into FP32 output buffer
+# ============================================================
+
+@triton.autotune(
+    configs=_DECODE_CONFIGS,
+    key=["M", "N", "K", "SPLIT_K"],
+)
+@triton.jit
+def fp8_block_gemm_splitk_kernel(
+    # pointers
+    a_ptr, b_ptr, c_ptr,
+    a_scale_ptr, b_scale_ptr,
+
+    # shapes
+    M, N, K,
+
+    # strides
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    stride_b_scale_k, stride_b_scale_n,
+
+    # compile-time constants
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
+    SPLIT_K: tl.constexpr,
+):
+    pid_mn = tl.program_id(0)
+    pid_split = tl.program_id(1)
+
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    pid_m, pid_n = _compute_pid_mn(pid_mn, num_pid_m, num_pid_n, GROUP_SIZE_M)
+
+    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_k = tl.arange(0, BLOCK_SIZE_K)
+
+    tl.multiple_of(offs_k, 8)
+    tl.max_contiguous(offs_m, BLOCK_SIZE_M)
+    tl.max_contiguous(offs_n, BLOCK_SIZE_N)
+
+    a_scale = tl.load(a_scale_ptr + offs_m, mask=offs_m < M, other=0.0)
+    a_scale = a_scale[:, None]
+
+    acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+    total_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
+    tiles_per_split = tl.cdiv(total_k_tiles, SPLIT_K)
+
+    start_tile = pid_split * tiles_per_split
+    end_tile = tl.minimum(start_tile + tiles_per_split, total_k_tiles)
+
+    scale_n_idx = (pid_n * BLOCK_SIZE_N) // 128
+
+    # initialize pointers at split-local start
+    a_ptrs = a_ptr + offs_m[:, None] * stride_am + (start_tile * BLOCK_SIZE_K + offs_k)[None, :] * stride_ak
+    b_ptrs = b_ptr + (start_tile * BLOCK_SIZE_K + offs_k)[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+    for k_tile in range(start_tile, end_tile):
+        k_offsets = k_tile * BLOCK_SIZE_K + offs_k
+
+        a = tl.load(
+            a_ptrs,
+            mask=(offs_m[:, None] < M) & (k_offsets[None, :] < K),
+            other=0.0,
+        )
+        b = tl.load(
+            b_ptrs,
+            mask=(k_offsets[:, None] < K) & (offs_n[None, :] < N),
+            other=0.0,
+        )
+
+        scale_k_idx = (k_tile * BLOCK_SIZE_K) // 128
+        b_scale = tl.load(
+            b_scale_ptr + scale_k_idx * stride_b_scale_k + scale_n_idx * stride_b_scale_n
+        )
+
+        acc += tl.dot(a, b, out_dtype=tl.float32) * b_scale
+
+        a_ptrs += BLOCK_SIZE_K * stride_ak
+        b_ptrs += BLOCK_SIZE_K * stride_bk
+
+    acc = acc * a_scale
+
+    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
+    c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+
+    # split-k path must accumulate into FP32 output buffer
+    tl.atomic_add(c_ptrs, acc, mask=c_mask)
+
+
+# ============================================================
+# launcher
+# ============================================================
+
+def triton_fp8_block_gemm_optimized(
+    x_fp8: torch.Tensor,
+    weight_fp8: torch.Tensor,
+    x_scale: torch.Tensor,
+    weight_scale_inv: torch.Tensor,
+    out: torch.Tensor | None = None,
+    block_size_k: int = 128,
+    split_k: int | None = None,
+    return_bf16: bool = True,
+) -> torch.Tensor:
+    """
+    Semantics preserved w.r.t. the original kernel:
+      acc += dot(a_block, b_block) * b_scale[k_block, n_block]
+      acc *= a_scale[row]
+    """
+
+    assert x_fp8.is_cuda and weight_fp8.is_cuda
+    assert x_scale.is_cuda and weight_scale_inv.is_cuda
+    assert x_fp8.ndim == 2 and weight_fp8.ndim == 2
+    assert x_scale.ndim == 1
+    assert weight_scale_inv.ndim == 2
+
+    M, K = x_fp8.shape
+    K_w, N = weight_fp8.shape
+    assert K == K_w, f"K mismatch: {K} vs {K_w}"
+    assert block_size_k == 128, "Current scale indexing logic assumes 128-wide K blocks."
+
+    # heuristic
+    if split_k is None:
+        # decode-like small-M: use split-k to improve occupancy
+        if M <= 32:
+            split_k = 4
+        elif M <= 64:
+            split_k = 2
+        else:
+            split_k = 1
+
+    if split_k == 1:
+        # direct output path
+        if out is None:
+            out = torch.empty((M, N), device=x_fp8.device,
+                              dtype=torch.bfloat16 if return_bf16 else torch.float32)
+
+        grid = lambda META: (
+            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        )
+
+        fp8_block_gemm_prefill_kernel[grid](
+            x_fp8, weight_fp8, out, x_scale, weight_scale_inv,
+            M, N, K,
+            x_fp8.stride(0), x_fp8.stride(1),
+            weight_fp8.stride(0), weight_fp8.stride(1),
+            out.stride(0), out.stride(1),
+            weight_scale_inv.stride(0), weight_scale_inv.stride(1),
+            BLOCK_SIZE_K=block_size_k,
+            OUT_DTYPE_BF16=(out.dtype == torch.bfloat16),
+        )
+        return out
+
+    # split-k path: accumulate in fp32 scratch, then cast if needed
+    if out is None:
+        out_fp32 = torch.zeros((M, N), device=x_fp8.device, dtype=torch.float32)
+    else:
+        assert out.dtype in (torch.float32, torch.bfloat16)
+        if out.dtype == torch.float32:
+            out.zero_()
+            out_fp32 = out
+        else:
+            out_fp32 = torch.zeros((M, N), device=x_fp8.device, dtype=torch.float32)
+
+    grid = lambda META: (
+        triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        split_k,
+    )
+
+    fp8_block_gemm_splitk_kernel[grid](
+        x_fp8, weight_fp8, out_fp32, x_scale, weight_scale_inv,
+        M, N, K,
+        x_fp8.stride(0), x_fp8.stride(1),
+        weight_fp8.stride(0), weight_fp8.stride(1),
+        out_fp32.stride(0), out_fp32.stride(1),
+        weight_scale_inv.stride(0), weight_scale_inv.stride(1),
+        BLOCK_SIZE_K=block_size_k,
+        SPLIT_K=split_k,
+    )
+
+    if out is not None and out.dtype == torch.float32:
+        return out
+    return out_fp32.to(torch.bfloat16) if return_bf16 else out_fp32
