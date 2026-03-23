@@ -7,9 +7,9 @@ from nanovllm import LLM, SamplingParams
 
 def main():
     seed(0)
-    num_seqs = 128
-    max_input_len = 1024
-    max_ouput_len = 1024
+    num_seqs = 32
+    max_input_len = 256
+    max_ouput_len = 256
 
     path = os.path.expanduser("/mnt/d/huggingface/Qwen3-0.6B-FP8/")
     llm = LLM(path, enforce_eager=False, max_model_len=4096)

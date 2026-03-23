@@ -3,7 +3,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
-from .kernals_fp8 import triton_dynamic_quantize, triton_fp8_block_gemm_optimized, triton_dequantize_weight
+from .kernals_fp8 import triton_dynamic_quantize, triton_fp8_block_gemm_optimized, triton_dequantize_weight, triton_fp8_block_gemm
 
 
 

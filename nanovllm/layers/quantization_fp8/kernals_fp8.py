@@ -644,9 +644,9 @@ def triton_fp8_block_gemm_optimized(
     # heuristic
     if split_k is None:
         # decode-like small-M: use split-k to improve occupancy
-        if M <= 32:
+        if M <= 16:
             split_k = 4
-        elif M <= 64:
+        elif M <= 32:
             split_k = 2
         else:
             split_k = 1

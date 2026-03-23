@@ -20,7 +20,7 @@ def main():
     llm = LLM(path, enforce_eager=False, tensor_parallel_size=1)    
 
     sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
-    prompts = ["write a short story around 1000 words"] * 2
+    prompts = ["write a short story around 500 words"] * 16
     prompts = [
         tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
@@ -34,7 +34,7 @@ def main():
     for prompt, output in zip(prompts, outputs):
         print("\n")
         print(f"Prompt: {prompt!r}")
-        print(f"Completion: {output['text']!r}")
+        #print(f"Completion: {output['text']!r}")
 
 
 if __name__ == "__main__":
