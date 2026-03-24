@@ -3,7 +3,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
-from .kernals_fp8 import triton_dynamic_quantize, triton_fp8_block_gemm_optimized, triton_dequantize_weight, triton_fp8_block_gemm
+from .kernals_fp8 import triton_dynamic_quantize, triton_fp8_block_gemm_optimized
 
 
 
@@ -80,31 +80,6 @@ class LinearBase_fp8(nn.Module):
         self.weight_t_packed.copy_(self.weight.data.t().contiguous())
         self.weight_scale_t_packed.copy_(self.weight_scale_inv.data.t().contiguous())
 
-
-
-    # expand scale to full weight shape and dequantized by doing element-wise multiplication
-    def _dequantize_weight(self) -> torch.Tensor:
-        # call kernal.
-        return triton_dequantize_weight(self.weight, self.weight_scale_inv, self.block_size)
-
-    # pytorch quantization methods
-    def _dynamic_quantize_activation_per_token(self, x: torch.Tensor):
-        """
-        quant activation to FP8 e4m3, element-wise (row-wise)
-        param:
-            x has shape of [length, hidden_size] bf16.
-            length = batch_size * seq_len
-        return:
-            x_fp8 same shape as input
-            scale in fp32 [length, 1]
-        """
-        FP8_MAX = 448.0
-        amax = x.abs().amax(dim=-1, keepdim=True) 
-        amax = torch.clamp(amax, min=1e-12)
-        x_scale = (amax / FP8_MAX).to(torch.float32)
-        x_fp8 = (x / x_scale).to(torch.float8_e4m3fn)
-        
-        return x_fp8, x_scale
 
 
 
@@ -221,6 +196,9 @@ class RowParallelLinear_fp8(LinearBase_fp8):
             split_k=None,
             return_bf16=False
         )
+
+
+
 
         if self.bias is not None:
             y_2d_fp32 = y_2d_fp32 + self.bias

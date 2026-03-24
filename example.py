@@ -6,10 +6,6 @@ import torch
 from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
 from nanovllm.utils.context import get_context
 
-# ==========================================
-# 🚨 告诉 Dynamo (torch.compile)：
-# 把这俩 C++ 黑盒当成普通节点塞进图里，别尝试去解析它们！
-# ==========================================
 torch.compiler.allow_in_graph(flash_attn_varlen_func)
 torch.compiler.allow_in_graph(flash_attn_with_kvcache)
 
@@ -20,7 +16,7 @@ def main():
     llm = LLM(path, enforce_eager=False, tensor_parallel_size=1)    
 
     sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
-    prompts = ["write a short story around 500 words"] * 16
+    prompts = ["write a short story around 500 words"] * 2
     prompts = [
         tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
@@ -34,7 +30,7 @@ def main():
     for prompt, output in zip(prompts, outputs):
         print("\n")
         print(f"Prompt: {prompt!r}")
-        #print(f"Completion: {output['text']!r}")
+        print(f"Completion: {output['text']!r}")
 
 
 if __name__ == "__main__":
