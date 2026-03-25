@@ -6,16 +6,16 @@ from transformers import Qwen3Config
 from nanovllm.layers.activation import SiluAndMul
 from nanovllm.layers.attention import Attention
 from nanovllm.layers.layernorm import RMSNorm
-from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
+from nanovllm.layers.factory import get_linear_layer, get_norm_layer
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
-from nanovllm.layers.quantization_fp8.Linear_fp8 import ColumnParallelLinear_fp8, RowParallelLinear_fp8, MergedColumnParallelLinear_fp8, QKVParallelLinear_fp8 
-
+from nanovllm.layers.quantization_fp8.layernorm_fp8 import RMSNorm_FP8
 
 class Qwen3Attention(nn.Module):
 
     def __init__(
         self,
+        config: any, 
         hidden_size: int,
         num_heads: int,
         num_kv_heads: int,
@@ -40,18 +40,23 @@ class Qwen3Attention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
 
-        self.qkv_proj = QKVParallelLinear_fp8(
+        QKVLinearClass = get_linear_layer("QKV", config)
+        RowLinearClass = get_linear_layer("Row", config)
+
+        self.qkv_proj = QKVLinearClass(
             hidden_size,
             self.head_dim,
             self.total_num_heads,
             self.total_num_kv_heads,
             bias=qkv_bias,
         )
-        self.o_proj = RowParallelLinear_fp8(
+
+        self.o_proj = RowLinearClass(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
         )
+
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -66,15 +71,28 @@ class Qwen3Attention(nn.Module):
             self.num_kv_heads,
         )
         if not self.qkv_bias:
+            # 这里的 norm 是针对 qk 的，暂时保持普通 RMSNorm 不变，除非你也想量化 QK
             self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
             self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
 
+    # [ORIGINAL 普通 BF16 版本]
+    # def forward(
+    #     self,
+    #     positions: torch.Tensor,
+    #     hidden_states: torch.Tensor,
+    # ) -> torch.Tensor:
+    #     qkv = self.qkv_proj(hidden_states)
+    
+    # [🚨 FP8 改造: 修改参数列表，接收 fp8 张量和 scale]
     def forward(
         self,
         positions: torch.Tensor,
-        hidden_states: torch.Tensor,
+        hidden_states: torch.Tensor, 
+        scale: torch.Tensor | None
     ) -> torch.Tensor:
-        qkv = self.qkv_proj(hidden_states)
+        # [🚨 FP8 改造: 将 fp8 和 scale 喂给底层重写的 QKV ColumnParallelLinear_fp8]
+        qkv = self.qkv_proj(hidden_states, scale) 
+        
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q = q.view(-1, self.num_heads, self.head_dim)
         k = k.view(-1, self.num_kv_heads, self.head_dim)
@@ -87,31 +105,72 @@ class Qwen3Attention(nn.Module):
         output = self.o_proj(o.flatten(1, -1))
         return output
 
+    # def forward(
+    #         self,
+    #         positions: torch.Tensor,
+    #         hidden_states: torch.Tensor,
+    #         scale: torch.Tensor | None = None  # 增加 scale 占位，实现接口对齐
+    #     ) -> torch.Tensor:
+    #         # 无论底层是 FP8 还是 BF16，统一传递 (x, scale)
+    #         qkv = self.qkv_proj(hidden_states, scale) 
+            
+    #         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+    #         q = q.view(-1, self.num_heads, self.head_dim)
+    #         k = k.view(-1, self.num_kv_heads, self.head_dim)
+    #         v = v.view(-1, self.num_kv_heads, self.head_dim)
+            
+    #         if not self.qkv_bias:
+    #             q = self.q_norm(q)
+    #             k = self.k_norm(k)
+                
+    #         q, k = self.rotary_emb(positions, q, k)
+    #         o = self.attn(q, k, v)
+            
+    #         # o_proj 同样支持统一签名
+    #         output = self.o_proj(o.flatten(1, -1))
+    #         return output
+
 
 class Qwen3MLP(nn.Module):
 
     def __init__(
         self,
+        config: any, 
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear_fp8(
+        
+        MergedColumnLinearClass = get_linear_layer("MergedColumn", config)
+        RowLinearClass = get_linear_layer("Row", config)
+
+        self.gate_up_proj = MergedColumnLinearClass(
             hidden_size,
             [intermediate_size] * 2,
             bias=False,
         )
-        self.down_proj = RowParallelLinear_fp8(
+        self.down_proj = RowLinearClass(
             intermediate_size,
             hidden_size,
             bias=False,
         )
+
         assert hidden_act == "silu"
         self.act_fn = SiluAndMul()
 
-    def forward(self, x):
-        gate_up = self.gate_up_proj(x)
+    # [ORIGINAL 普通 BF16 版本]
+    # def forward(self, x):
+    #     gate_up = self.gate_up_proj(x)
+    #     x = self.act_fn(gate_up)
+    #     x = self.down_proj(x)
+    #     return x
+
+    # [🚨 FP8 改造: 修改参数列表，接收 fp8 张量和 scale]
+    def forward(self, x: torch.Tensor, scale: torch.Tensor | None):
+        # [🚨 FP8 改造: 将 fp8 和 scale 喂给底层重写的 Gate_Up ColumnParallelLinear_fp8]
+        gate_up = self.gate_up_proj(x, scale) 
+        # gate_up = self.gate_up_proj(x, scale)
         x = self.act_fn(gate_up)
         x = self.down_proj(x)
         return x
@@ -124,7 +183,9 @@ class Qwen3DecoderLayer(nn.Module):
         config: Qwen3Config,
     ) -> None:
         super().__init__()
+
         self.self_attn = Qwen3Attention(
+            config=config,
             hidden_size=config.hidden_size,
             num_heads=config.num_attention_heads,
             num_kv_heads=config.num_key_value_heads,
@@ -136,12 +197,20 @@ class Qwen3DecoderLayer(nn.Module):
             rope_scaling=getattr(config, "rope_scaling", None),
         )
         self.mlp = Qwen3MLP(
+            config=config,
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
         )
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        
+        # [ORIGINAL 普通 BF16 版本]
+        # self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        # [🚨 FP8 改造: 使用新的自带量化的 RMSNorm_FP8]
+        NormClass = get_norm_layer(config)
+        self.input_layernorm = NormClass(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = NormClass(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -149,13 +218,50 @@ class Qwen3DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        
+        # ==========================================
+        # 1. Input Layernorm
+        # ==========================================
+        # [ORIGINAL 普通 BF16 版本]
+        # if residual is None:
+        #     hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
+        # else:
+        #     hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            
+        # [🚨 FP8 改造: 解包出 fp8_tensor 和 scale]
         if residual is None:
-            hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
+            hidden_states_quant, scale = self.input_layernorm(hidden_states)
+            residual = hidden_states
         else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
-        hidden_states = self.self_attn(positions, hidden_states)
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+            hidden_states_quant, scale, residual = self.input_layernorm(hidden_states, residual)
+            
+        # ==========================================
+        # 2. Attention
+        # ==========================================
+        # [ORIGINAL 普通 BF16 版本]
+        # hidden_states = self.self_attn(positions, hidden_states)
+
+        # [🚨 FP8 改造: 将解包出的 fp8_tensor 和 scale 传给 attention]
+        hidden_states = self.self_attn(positions, hidden_states_quant, scale)
+        
+        # ==========================================
+        # 3. Post Attention Layernorm
+        # ==========================================
+        # [ORIGINAL 普通 BF16 版本]
+        # hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+
+        # [🚨 FP8 改造: 重新解包，这时候 residual 必定不为 None]
+        hidden_states_quant, scale, residual = self.post_attention_layernorm(hidden_states, residual)
+        
+        # ==========================================
+        # 4. MLP
+        # ==========================================
+        # [ORIGINAL 普通 BF16 版本]
+        # hidden_states = self.mlp(hidden_states)
+
+        # [🚨 FP8 改造: 将解包出的 fp8_tensor 和 scale 传给 mlp。修复了之前 scales 的笔误]
+        hidden_states = self.mlp(hidden_states_quant, scale)
+        
         return hidden_states, residual
 
 
@@ -167,6 +273,7 @@ class Qwen3Model(nn.Module):
     ) -> None:
         super().__init__()
         self.embed_tokens = VocabParallelEmbedding(config.vocab_size, config.hidden_size)
+        # 每一层都会接收到 config
         self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -198,6 +305,7 @@ class Qwen3ForCausalLM(nn.Module):
     ) -> None:
         super().__init__()
         self.model = Qwen3Model(config)
+        #self.model = torch.compile(self.model)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
@@ -214,3 +322,7 @@ class Qwen3ForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         return self.lm_head(hidden_states)
+
+
+
+

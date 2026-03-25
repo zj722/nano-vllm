@@ -3,7 +3,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
-from .kernals_fp8 import triton_dynamic_quantize, triton_fp8_block_gemm, triton_dequantize_weight
+from .kernals_fp8 import triton_dynamic_quantize, triton_fp8_block_gemm_optimized
 
 
 
@@ -13,7 +13,7 @@ def divide(numerator, denominator):
 
 
 # ==========================================
-# 1. 核心基类 (Base Class)
+# 1. Base Class
 # ==========================================
 class LinearBase_fp8(nn.Module):
     def __init__(
@@ -29,6 +29,7 @@ class LinearBase_fp8(nn.Module):
         self.tp_rank = dist.get_rank() if dist.is_initialized() else 0
         self.tp_size = dist.get_world_size() if dist.is_initialized() else 1
         self.block_size = block_size
+        self.output_size = output_size
 
         self.weight = nn.Parameter(
             torch.empty(output_size, input_size, dtype=torch.float8_e4m3fn),
@@ -52,36 +53,33 @@ class LinearBase_fp8(nn.Module):
         else:
             self.register_parameter("bias", None)
 
-    # expand scale to full weight shape and dequantized by doing element-wise multiplication
-    def _dequantize_weight(self) -> torch.Tensor:
-        # 一行代码，调用我们写好的光速算子
-        return triton_dequantize_weight(self.weight, self.weight_scale_inv, self.block_size)
+        self.register_buffer(
+            "weight_t_packed",
+            torch.empty(input_size, output_size, dtype=torch.float8_e4m3fn),
+            persistent=False
+        )
+        self.register_buffer(
+            "weight_scale_t_packed",
+            torch.empty(scale_input_size, scale_output_size, dtype=torch.float32),
+            persistent=False
+        )
 
-    def _dynamic_quantize_activation_per_token(self, x: torch.Tensor):
-        """
-        将高精度激活值动态量化为 FP8 e4m3 格式 (Token-wise)
-        
-        参数:
-            x: 形状为 [Tokens, hidden_size] 的激活值张量 (通常是 bfloat16 或 float16)
-            Token = seq_len * batch_size
-        返回:
-            x_fp8: 形状为 [Tokens, hidden_size] 的 FP8 激活值
-            x_scale: 形状为 [Tokens, 1] 的缩放因子 (float32)
-        """
-        # 物理常识：FP8 e4m3 格式的最大可表示数值是 448.0
-        FP8_MAX = 448.0
-        
-        # 阶段 1：找每一行的绝对最大值 (Amax)
-        # dim=-1 代表沿着 input_size 这个维度找最大值
-        # keepdim=True 让输出形状保持 [Tokens, 1]，方便后面做除法广播
-        amax = x.abs().amax(dim=-1, keepdim=True) 
-        
-        # 防止出现全 0 的行导致除以 0 的惨剧，设一个极小的底线
-        amax = torch.clamp(amax, min=1e-12)
-        x_scale = (amax / FP8_MAX).to(torch.float32)
-        x_fp8 = (x / x_scale).to(torch.float8_e4m3fn)
-        
-        return x_fp8, x_scale
+        # 提前分配内存
+        self.max_decode_batch = 256
+        # 使用 register_buffer 注册，不参与梯度更新，但会随模型自动分发到对应 GPU
+        self.register_buffer(
+            "output_fp32_workspace",
+            torch.zeros((self.max_decode_batch, self.output_size), dtype=torch.float32),
+            persistent=False # persistent=False 表示它不需要被保存到 weights checkpoint 里
+        )
+
+
+
+    @torch.no_grad()
+    def refresh_packed_weight_views(self):
+        self.weight_t_packed.copy_(self.weight.data.t().contiguous())
+        self.weight_scale_t_packed.copy_(self.weight_scale_inv.data.t().contiguous())
+
 
 
 
@@ -92,17 +90,6 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
     def __init__(self, input_size: int, output_size: int, bias: bool = False):
         tp_size = dist.get_world_size() if dist.is_initialized() else 1
         super().__init__(input_size, divide(output_size, tp_size), bias, tp_dim=0)
-        # ==========================================
-        # 新增：为 CUDA Graph 准备的“录像机”和“静态内存坑位”
-        # ==========================================
-        self.is_graph_captured = False
-        self.g = None
-        self.static_x = None
-        self.static_y = None
-    """
-    param: baseclas self.weight or self.weight_scale_inv
-    loaded_weight: 从 .safetensors 文件加载的完整权重张量
-    """
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         shard_size = param.data.size(self.tp_dim)
@@ -112,53 +99,54 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
         start_idx (也就是 start)：这一刀从第几个索引开始下刀?
         shard_size (也就是 length)：切下来多厚（多少行）的一块肉？
         """
-        param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
-
+        #param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
+        local_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
+        param.data.copy_(local_weight)
+        self.weight_t_packed.copy_(local_weight.t().contiguous())
     def scale_loader(self, param: nn.Parameter, loaded_scale: torch.Tensor):
-        # Scale 的 loader 逻辑对于纯 Column 切分是一模一样的！
-        # 因为 param.data 已经是被除以过 block_size 的浓缩版形状了
         shard_size = param.data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
-        param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
+        #param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
+        local_scale = loaded_scale.narrow(self.tp_dim, start_idx, shard_size)
+        param.data.copy_(local_scale)
+        self.weight_scale_t_packed.copy_(local_scale.t().contiguous())
+    # use only fp8 gemm kernal
+    def forward(self, x_fp8: torch.Tensor, x_scale: torch.Tensor) -> torch.Tensor:
 
-
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        original_shape = x.shape 
-        if x.numel() == 0:
-            # 如果没活干，直接造一个形状正确的空张量返回，跳过所有运算
-            # 假设你的 weight 形状是 [out_features, in_features]
-            out_features = self.weight.shape[0] 
-            return torch.empty(*original_shape[:-1], out_features, device=x.device, dtype=x.dtype)
-
-       
+        original_shape = x_fp8.shape 
         
-        # 1. 压扁成 2D: [Batch * Seq, Hidden]
-        x_2d = x.view(-1, original_shape[-1])
-        
-        # 2. 动态量化激活值 (统一调用你写好的函数)
-        x_fp8, x_scale = self._dynamic_quantize_activation_per_token(x_2d)
-        
-        # 3. 终极一战：全场景使用带 Split-K 的 Triton FP8 GEMM 算子
-        # 在 Decode 时，它会自动享受 CUDA Graph 的零开销红利！
-        y_2d = triton_fp8_block_gemm(
-            x_fp8, 
-            self.weight.t(), 
-            x_scale, 
-            self.weight_scale_inv.t()
+        x_fp8_2d = x_fp8.view(-1, original_shape[-1])
+        x_scale_1d = x_scale.view(-1)
+
+        M = x_fp8_2d.shape[0]
+        if M <= self.max_decode_batch:
+            out_fp32 = self.output_fp32_workspace[:M, :]
+            out_fp32.zero_()
+        else:
+            out_fp32 = torch.empty(
+                (M, self.output_size),
+                device=x_fp8.device,
+                dtype=torch.float32
+            )
+
+
+
+        y_2d_fp32 = triton_fp8_block_gemm_optimized(
+            x_fp8=x_fp8_2d,
+            weight_fp8=self.weight_t_packed,
+            x_scale=x_scale_1d,
+            weight_scale_inv=self.weight_scale_t_packed,
+            out=out_fp32,
+            block_size_k=128,
+            split_k=None,
+            return_bf16=False
         )
-        
-        # 4. 加上偏置 (如果有的话)
-        if self.bias is not None:
-            y_2d = y_2d + self.bias
-        # 6. 变回原来的形状
-        y = y_2d.view(*original_shape[:-1], -1)
-        return y
-           
 
-        # x_fp8, x_scale = triton_dynamic_quantize(x_2d)
-        # return triton_fp8_block_gemm(x_fp8, self.weight.t(), x_scale, self.weight_scale_inv.t(), )
-        # # return F.linear(x, self.weight, self.bias).to(toch.bfloat16)
+        if self.bias is not None:
+            y_2d_fp32 = y_2d_fp32 + self.bias
+
+        y_2d_bf16 = y_2d_fp32.to(torch.bfloat16)
+        return y_2d_bf16.view(*original_shape[:-1], -1)
 
 class RowParallelLinear_fp8(LinearBase_fp8):
     def __init__(self, input_size: int, output_size: int, bias: bool = False):
@@ -168,52 +156,57 @@ class RowParallelLinear_fp8(LinearBase_fp8):
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         shard_size = param.data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
-        param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
+        #param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
+        local_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
+        param.data.copy_(local_weight)
+        self.weight_t_packed.copy_(local_weight.t().contiguous())
 
     def scale_loader(self, param: nn.Parameter, loaded_scale: torch.Tensor):
         shard_size = param.data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
-        param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
-
+        #param.data.copy_(loaded_scale.narrow(self.tp_dim, start_idx, shard_size))
+        local_scale = loaded_scale.narrow(self.tp_dim, start_idx, shard_size)
+        param.data.copy_(local_scale)
+        self.weight_scale_t_packed.copy_(local_scale.t().contiguous())
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         original_shape = x.shape 
-        if x.numel() == 0:
-            # 如果没活干，直接造一个形状正确的空张量返回，跳过所有运算
-            # 假设你的 weight 形状是 [out_features, in_features]
-            out_features = self.weight.shape[0] 
-            return torch.empty(*original_shape[:-1], out_features, device=x.device, dtype=x.dtype)
-
- 
-
-        
-        
-        # 1. 压扁成 2D: [Batch * Seq, Hidden]
         x_2d = x.view(-1, original_shape[-1])
-        
-        # 2. 动态量化激活值 (统一调用你写好的函数)
-        x_fp8, x_scale = self._dynamic_quantize_activation_per_token(x_2d)
-        
-        # 3. 终极一战：全场景使用带 Split-K 的 Triton FP8 GEMM 算子
-        # 在 Decode 时，它会自动享受 CUDA Graph 的零开销红利！
-        y_2d = triton_fp8_block_gemm(
-            x_fp8, 
-            self.weight.t(), 
-            x_scale, 
-            self.weight_scale_inv.t()
-        )
-        
-        # 4. 加上偏置 (如果有的话)
-        if self.bias is not None:
-            y_2d = y_2d + self.bias
-            
-        # 5. 张量并行归约
-        if self.tp_size > 1:
-            dist.all_reduce(y_2d)
+        x_fp8, x_scale = triton_dynamic_quantize(x_2d)
+        x_fp8_2d = x_fp8.view(-1, original_shape[-1])
 
-        # 6. 变回原来的形状
-        y = y_2d.view(*original_shape[:-1], -1)
-        return y
-           
+        x_scale_1d = x_scale.view(-1)
+
+        M = x_fp8_2d.shape[0]
+        if M <= self.max_decode_batch:
+            out_fp32 = self.output_fp32_workspace[:M, :]
+            out_fp32.zero_()
+        else:
+            out_fp32 = torch.empty(
+                (M, self.output_size),
+                device=x_fp8.device,
+                dtype=torch.float32
+            )
+        y_2d_fp32 = triton_fp8_block_gemm_optimized(
+            x_fp8=x_fp8_2d,
+            weight_fp8=self.weight_t_packed,
+            x_scale=x_scale_1d,
+            weight_scale_inv=self.weight_scale_t_packed,
+            out=out_fp32,
+            block_size_k=128,
+            split_k=None,
+            return_bf16=False
+        )
+
+
+
+
+        if self.bias is not None:
+            y_2d_fp32 = y_2d_fp32 + self.bias
+
+        y_2d_bf16 = y_2d_fp32.to(torch.bfloat16)
+        if self.tp_size > 1:
+            dist.all_reduce(y_2d_bf16)
+        return y_2d_bf16.view(*original_shape[:-1], -1)
 
 
 # ==========================================
@@ -230,9 +223,8 @@ class MergedColumnParallelLinear_fp8(ColumnParallelLinear_fp8):
         param_data = param.data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
         param_data.copy_(loaded_weight)
-
+        self.refresh_packed_weight_views()
     def scale_loader(self, param: nn.Parameter, loaded_scale: torch.Tensor, loaded_shard_id: int):
-        # 核心修改：浓缩矩阵的 offset 和 size，必须除以 block_size
         base_offset = sum(self.output_sizes[:loaded_shard_id]) // self.tp_size
         base_size = self.output_sizes[loaded_shard_id] // self.tp_size
         
@@ -242,7 +234,7 @@ class MergedColumnParallelLinear_fp8(ColumnParallelLinear_fp8):
         param_data = param.data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_scale = loaded_scale.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
         param_data.copy_(loaded_scale)
-
+        self.refresh_packed_weight_views()
 
 
 class QKVParallelLinear_fp8(ColumnParallelLinear_fp8):
@@ -256,7 +248,6 @@ class QKVParallelLinear_fp8(ColumnParallelLinear_fp8):
         super().__init__(hidden_size, output_size, bias)
 
     def _get_qkv_bounds(self, loaded_shard_id: str):
-        """提取计算 offset 和 size 的通用逻辑"""
         if loaded_shard_id == "q":
             return 0, self.num_heads * self.head_size
         elif loaded_shard_id == "k":
@@ -269,14 +260,14 @@ class QKVParallelLinear_fp8(ColumnParallelLinear_fp8):
         param_data = param.data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
         param_data.copy_(loaded_weight)
-
+        self.refresh_packed_weight_views()
     def scale_loader(self, param: nn.Parameter, loaded_scale: torch.Tensor, loaded_shard_id: str):
         base_offset, base_size = self._get_qkv_bounds(loaded_shard_id)
-        
-        # 核心修改：浓缩矩阵处理
+    
         shard_offset = divide(base_offset, self.block_size)
         shard_size = divide(base_size, self.block_size)
         
         param_data = param.data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_scale = loaded_scale.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
-        param_data.copy_(loaded_scale)
+        param_data.copy_(loaded_scale)      
+        self.refresh_packed_weight_views() # ⬅️ 补上这行
