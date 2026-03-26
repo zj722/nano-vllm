@@ -27,6 +27,7 @@ python3 example.py
 For different quantization workload, simply change model path, auto dispatch tool will do everything for you.
 
 ## Quick Test
+run
 ```
 python3 bench.py
 ```
