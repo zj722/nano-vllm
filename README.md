@@ -20,22 +20,11 @@ hf download Qwen/Qwen3-0.6B --local-dir ~/huggingface/model/Qwen3-0.6B
 ```
 
 ## Quick Start
-See example.py for usage.
-```
-from nanovllm import LLM, SamplingParams
-llm = LLM("/YOUR/MODEL/PATH", enforce_eager=False, tensor_parallel_size=1)
-sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
-prompts = ["Hello, Nano-vLLM."]
-outputs = llm.generate(prompts, sampling_params)
-outputs[0]["text"]
-Benchmark
-See bench.py for benchmark.
-``` 
-or run
+run
 ```
 python3 example.py
 ```
-For different quantization workload, simply change model path, auto dispatch tool will do everything.
+For different quantization workload, simply change model path, auto dispatch tool will do everything for you.
 
 ## Quick Test
 ```
