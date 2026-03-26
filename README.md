@@ -59,11 +59,30 @@ To convert high-precision activations (BF16) into FP8 (`e4m3`), we designed a `f
 ---
 
 ### 2. FP8 GEMM 
-Our FP8 GEMM implementation strictly decouples the strategy based on the spatial dimension $M (B \times S)$ to handle different arithmetic intensities of Prefill and Decode.
+To fully unlock the hardware potential of FP8, our custom Triton kernels employ a highly specialized, hardware-aware design. We strictly decouple the execution strategy based on the spatial dimension $M$ (where $M = B \times S$) to address the distinct arithmetic intensities of the Prefill and Decode phases.
 
-- **During Prefill**, our kernel implemented double buffering techniques to activating "software-level pipelining" to achieve maximum GPU utilizations by properly tuning `num_stages`. We also strictly align block configurations to perfectly feed 36 SMs without fragmentation.
+**Intelligent Heuristic Routing**
+Our launcher dynamically inspects the spatial dimension $M$ and routes the workload to the most optimal kernel configuration (adjusting SPLIT_K, block sizes, and pipeline depth) on the fly, ensuring peak performance across both compute-bound and memory-bound regimes.
 
-- **During Decode**, When the spatial dimension $M$ is extremely small (e.g., $M=1$ to $32$), the GPU suffers from severe under-utilization. To solve this, we employ a `SPLIT_K` algorithm. By partitioning the computation of each row of $M$ along the dimension $K$, we break the workload into micro-tasks. This launches more thread blocks with lighter workloads, effectively forcing all 36 SMs on the RTX 4070 into full occupancy. Finally, partial results are accumulated using atomic_add operations. Hyperparameters such as `num_stages` and the `SPLIT_K` factor are tuned specifically for the RTX 4070 architecture.
+
+**Prefill Phase Optimization (Compute-Bound)**
+
+During the prefill phase, where large matrices ($M \ge 64$) generate massive compute workloads, our priority shifts to ALU utilization and register pressure management:
+- **Register Pressure Mitigation**: We decrease the software pipelining depth down to `num_stages=2` (double buffering). While deep pipelining hides latency, it consumes vast amounts of SRAM and registers. By stepping down the stages for large blocks, we prevent run out of register resource, freeing up resources for the Tensor Cores to process the heavy ALU workloads.
+
+- **L2 Cache Swizzling**: We implemented a grouped grid scheduling strategy (`_compute_pid_mn`). By reordering the execution sequence of thread blocks into localized groups, we significantly maximize L2 cache hit rates when loading the weight matrices, reducing global memory traffic.
+
+- **Perfect SM Alignment**: We strictly align our block configurations (e.g., $64 \times 32$ or $128 \times 128$) to perfectly feed the 36 Streaming Multiprocessors (SMs) on the RTX 4070 without fragmentation, ensuring no compute unit sits idle.
+
+
+**Decode Phase Optimization (Memory-Bound)**
+
+During the decode phase, the spatial dimension is extremely small (e.g., $M=1$ to $32$). Compute units are often starved while waiting for weight matrices to load. We applied optimizations to break the memory wall:
+
+- **Latency Hiding via Deep Software Pipelining**: We increased the `num_stages` parameter (e.g., to 3 or 4) to enable deep software pipelining (multi-buffering). This instructs the GPU's DMA engines to asynchronously prefetch future FP8 weight blocks into the fast SRAM in the background while simultaneously computing the current block. This overlap effectively hides the massive global memory latency, maximizing throughput.
+
+- **SM Saturation via Split-K**: For extreme edge cases ($M \le 32$), launching a standard grid leaves the majority of the GPU's SMs under-utilized. To solve this, we employ a **SPLIT_K** algorithm. By partitioning the computation of each row of $M$ along the dimension $K$, we break the workload into hundreds of micro-tasks. This forces all 36 SMs into full occupancy. The partial FP32 results are then safely aggregated using atomic_add operations in a global workspace.
+![split_k](figures/split_k.png)
 
 #### Evaluation
 
@@ -71,6 +90,11 @@ Our FP8 GEMM implementation strictly decouples the strategy based on the spatial
 ##### Test Configuration:
 - Hardware: RTX 4070 Laptop (8GB)
 - Model: Qwen3-0.6B & Qwen3-0.6b-FP8
+
+To conduct kernal evaluation run:
+```
+python3 kernel_comparison.py
+```
 
 The evaluation is formulated as a general matrix multiplication (GEMM) task. The tensor dimensions are denoted by $M$, $K$, and $N$, where the $M \times K$ matrix represents the input activations and the $K \times N$ matrix represents the model weights. 
 
