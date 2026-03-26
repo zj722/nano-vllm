@@ -11,6 +11,7 @@ torch.compiler.allow_in_graph(flash_attn_with_kvcache)
 
 def main():
     
+    # modify here according to your model path.
     path = os.path.expanduser("/mnt/d/huggingface/Qwen3-0.6B-FP8/")
     tokenizer = AutoTokenizer.from_pretrained(path)
     llm = LLM(path, enforce_eager=False, tensor_parallel_size=1)    

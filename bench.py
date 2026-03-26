@@ -11,7 +11,10 @@ def main():
     max_input_len = 128
     max_ouput_len = 1024
 
+    # modify here according to your model path.
+
     path = os.path.expanduser("/mnt/d/huggingface/Qwen3-0.6B-FP8/")
+    #path = os.path.expanduser("/mnt/d/huggingface/Qwen3-0.6B/")
     llm = LLM(path, enforce_eager=False, max_model_len=4096)
 
     prompt_token_ids = [[randint(0, 10000) for _ in range(randint(1, max_input_len))] for _ in range(num_seqs)]

@@ -59,7 +59,7 @@ class ColumnParallelLinear(LinearBase):
     def __init__(
         self,
         input_size: int,
-        output_size: int, #全局output_size
+        output_size: int, 
         bias: bool = False,
     ):
         tp_size = dist.get_world_size()

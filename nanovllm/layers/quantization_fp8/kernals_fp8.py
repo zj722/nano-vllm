@@ -6,63 +6,41 @@ import torch.nn
 
 @triton.jit
 def fused_dynamic_quantize_kernel(
-    x_ptr,           # 输入: 高精度的 X [M, K] (BF16)
-    y_ptr,           # 输出: 量化后的 X [M, K] (FP8)
-    scale_ptr,       # 输出: 算出来的 Scale [M, 1] (FP32)
-    M, K,            # 维度
+    x_ptr,          
+    y_ptr,          
+    scale_ptr,       
+    M, K,           
     stride_xm, stride_xk,
     stride_ym, stride_yk,
-    BLOCK_K: tl.constexpr # 让一个 Block 一口气处理完一整行 K
+    BLOCK_K: tl.constexpr 
 ):
-    # 每一个 Program (包工头) 只负责处理一个 Token (也就是矩阵的一行)
     pid_m = tl.program_id(0)
     
-    # 获取这一行的内存偏移量
     x_row_ptr = x_ptr + pid_m * stride_xm
     y_row_ptr = y_ptr + pid_m * stride_ym
     scale_row_ptr = scale_ptr + pid_m * 1
     
-    # 生成这一行 K 个元素的偏移序列 (假设 K 足够小能被装进 SRAM，比如 4096)
     offs_k = tl.arange(0, BLOCK_K)
     
-    # ----------------------------------------------------
-    # 一次性读入一整行的高精度数据 (BF16)
-    # ----------------------------------------------------
     x = tl.load(x_row_ptr + offs_k * stride_xk, mask=offs_k < K, other=0.0)
-    
-    # ----------------------------------------------------
-    # 在 SRAM (寄存器) 中极速完成 4 步操作，绝不碰显存！
-    # ----------------------------------------------------
-    # 1. 取绝对值
+ 
     abs_x = tl.math.abs(x)
-    # 2. 找全局最大值
     max_val = tl.max(abs_x, axis=0)
-    # 防止除零
     max_val = tl.maximum(max_val, 1e-12)
-    # 3. 算 Scale (FP8 e4m3 最大值是 448.0)
     scale = max_val / 448.0
-    # 4. 执行量化并转换格式
-    y = (x / scale).to(tl.float8e4nv) # tl.float8e4nv 是 Triton 里的 e4m3 格式
-    
-    # ----------------------------------------------------
-    # 把最终结果写回显存
-    # ----------------------------------------------------
+    y = (x / scale).to(tl.float8e4nv) 
+
     tl.store(y_row_ptr + offs_k * stride_yk, y, mask=offs_k < K)
     tl.store(scale_row_ptr, scale)
 
-# Python 包装函数
 def triton_dynamic_quantize(x: torch.Tensor):
     M, K = x.shape
-    # 提前挖好输出坑位
     x_fp8 = torch.empty((M, K), device=x.device, dtype=torch.float8_e4m3fn)
     x_scale = torch.empty((M, 1), device=x.device, dtype=torch.float32)
     
-    # 寻找比 K 大的最小的 2 的幂次方 (Triton 要求 BLOCK_SIZE 必须是 2 的幂)
     BLOCK_K = triton.next_power_of_2(K)
-    
-    # Grid 极其简单：有几行 (M)，就派几个 Block 过去
+
     grid = (M, )
-    
     fused_dynamic_quantize_kernel[grid](
         x, x_fp8, x_scale,
         M, K,
@@ -70,61 +48,31 @@ def triton_dynamic_quantize(x: torch.Tensor):
         x_fp8.stride(0), x_fp8.stride(1),
         BLOCK_K=BLOCK_K
     )
-    
     return x_fp8, x_scale
 
 
-# ============================================================
-# Prefill Configs: 兼顾大矩阵的高吞吐与 36 SM 的波次对齐
-# ============================================================
+
 _PREFILL_CONFIGS = [
-    # --- 1. 极限防溢出配置 (针对 M=512 导致的 0.27x 惨案) ---
-    # 为什么用 num_stages=2? 
-    # FP8 的 Block 很容易把 L1/SRAM 塞满，导致寄存器溢出。退回到 2 stages (双缓冲) 
-    # 可以释放大量寄存器给 ALU，彻底解决大矩阵下速度断崖下跌的问题。
     triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=2),
     triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=2),
     triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=2),
-
-    # --- 2. 36 SM "完美填缝" 配置 ---
-    # 假设 N=4096, BLOCK_N=64 -> 64 个块。如果 M=128, BLOCK_M=64 -> 2 个块。
-    # 总块数 = 128 个。 128 / 36 = 3.5 轮。GPU 最怕这种带 .5 的轮数（会有 18 个 SM 闲置）。
-    # 使用 BLOCK_N=256 -> 16 个块。M=128 块数为 2 -> 总计 32 个块。
-    # 此时凑不够 36！所以 M 较小时绝对不能用过大的 BLOCK_N。
     triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),  # 产生大量碎片，喂饱 36 SM
     triton.Config({"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
-
-    # --- 3. 经典高吞吐配置 (当 M >= 512 时，总 Block 数量肯定远超 36，此时拼的是单核吞吐) ---
     triton.Config({"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
     triton.Config({"BLOCK_SIZE_M": 64, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
 ]
 
-# ============================================================
-# Decode/Split-K Configs: 榨干每一个 SM 的算力
-# ============================================================
 _DECODE_CONFIGS = [
-    # --- 1. "蜂群" 战术 (极致细碎) ---
-    # 针对 M=1 ~ 32 这种极限 Decode 场景。
-    # 用极小的 M 和 N，配合 Split-K，强行制造出成百上千个微小任务，让 36 SM 全功率运转。
     triton.Config({"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=2, num_stages=3), # 注意这里用了少见的 2 Warps!
     triton.Config({"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
     triton.Config({"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 32, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
-
-    # --- 2. 宽 N 配置 (适合 N=4096) ---
-    # 当 A 矩阵只有 1 行时，多次读取 A 极其浪费，不如把 N 拉长，让一次 A 的读取服务于更多的 B。
     triton.Config({"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
     triton.Config({"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
     triton.Config({"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
-
-    # --- 3. 规避高并发下的寄存器压力 ---
     triton.Config({"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=2),
     triton.Config({"BLOCK_SIZE_M": 32, "BLOCK_SIZE_N": 64, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=2),
 ]
 
-# ============================================================
-# helper: grouped pid mapping for better L2 locality
-# Triton matmul tutorial style
-# ============================================================
 
 @triton.jit
 def _compute_pid_mn(
@@ -141,12 +89,6 @@ def _compute_pid_mn(
     pid_m = first_pid_m + (pid % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
     return pid_m, pid_n
-
-
-# ============================================================
-# Prefill kernel: SPLIT_K == 1
-# No atomic
-# ============================================================
 
 @triton.autotune(
     configs=_PREFILL_CONFIGS,
@@ -218,8 +160,6 @@ def fp8_block_gemm_prefill_kernel(
         b_scale = tl.load(
             b_scale_ptr + scale_k_idx * stride_b_scale_k + scale_n_idx * stride_b_scale_n
         )
-
-        # same math as your original kernel
         acc += tl.dot(a, b, out_dtype=tl.float32) * b_scale
 
         a_ptrs += BLOCK_SIZE_K * stride_ak
@@ -297,7 +237,6 @@ def fp8_block_gemm_splitk_kernel(
 
     scale_n_idx = (pid_n * BLOCK_SIZE_N) // 128
 
-    # initialize pointers at split-local start
     a_ptrs = a_ptr + offs_m[:, None] * stride_am + (start_tile * BLOCK_SIZE_K + offs_k)[None, :] * stride_ak
     b_ptrs = b_ptr + (start_tile * BLOCK_SIZE_K + offs_k)[:, None] * stride_bk + offs_n[None, :] * stride_bn
 
@@ -332,7 +271,6 @@ def fp8_block_gemm_splitk_kernel(
     c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
 
-    # split-k path must accumulate into FP32 output buffer
     tl.atomic_add(c_ptrs, acc, mask=c_mask)
 
 
@@ -350,11 +288,6 @@ def triton_fp8_block_gemm_optimized(
     split_k: int | None = None,
     return_bf16: bool = True,
 ) -> torch.Tensor:
-    """
-    Semantics preserved w.r.t. the original kernel:
-      acc += dot(a_block, b_block) * b_scale[k_block, n_block]
-      acc *= a_scale[row]
-    """
 
     assert x_fp8.is_cuda and weight_fp8.is_cuda
     assert x_scale.is_cuda and weight_scale_inv.is_cuda
@@ -370,16 +303,15 @@ def triton_fp8_block_gemm_optimized(
     # heuristic
     if split_k is None:
         if M <= 16:
-            split_k = 4  # 极小 Batch，切 4 份
+            split_k = 4  
         elif M <= 64:
-            split_k = 4  # 保障至少有 32 * 4 = 128 个 Block，充分掩盖访存延迟
+            split_k = 4 
         elif M <= 128:
-            split_k = 2  # 32 * 2 = 64 个 Block，保障 36 SM 两轮全满
+            split_k = 2 
         else:
-            split_k = 1  # 真正的巨大矩阵 (Prefill)，交还给常规算子，避免 Atomic 冲突
+            split_k = 1 
 
     if split_k == 1:
-        # direct output path
         if out is None:
             out = torch.empty((M, N), device=x_fp8.device,
                               dtype=torch.bfloat16 if return_bf16 else torch.float32)
@@ -400,7 +332,6 @@ def triton_fp8_block_gemm_optimized(
         )
         return out
 
-    # split-k path: accumulate in fp32 scratch, then cast if needed
     if out is None:
         out_fp32 = torch.zeros((M, N), device=x_fp8.device, dtype=torch.float32)
     else:

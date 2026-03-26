@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 
-# 1. 把它变成一个模块级别的纯函数，不带 self
 @torch.compile
 def _rms_forward_functional(x: torch.Tensor, weight: torch.Tensor, eps: float):
     orig_dtype = x.dtype
@@ -27,7 +26,6 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(hidden_size))
 
-    # 2. 类里面的方法去掉 @torch.compile，去调用上面的纯函数
     def rms_forward(self, x: torch.Tensor) -> torch.Tensor:
         return _rms_forward_functional(x, self.weight, self.eps)
 

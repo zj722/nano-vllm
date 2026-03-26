@@ -64,13 +64,11 @@ class LinearBase_fp8(nn.Module):
             persistent=False
         )
 
-        # 提前分配内存
         self.max_decode_batch = 256
-        # 使用 register_buffer 注册，不参与梯度更新，但会随模型自动分发到对应 GPU
         self.register_buffer(
             "output_fp32_workspace",
             torch.zeros((self.max_decode_batch, self.output_size), dtype=torch.float32),
-            persistent=False # persistent=False 表示它不需要被保存到 weights checkpoint 里
+            persistent=False 
         )
 
 
@@ -94,11 +92,6 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
         shard_size = param.data.size(self.tp_dim)
         start_idx = self.tp_rank * shard_size
-        """
-        self.tp_dim (也就是 dimension)：你要在哪个维度动刀？这里是 0（按行切）。
-        start_idx (也就是 start)：这一刀从第几个索引开始下刀?
-        shard_size (也就是 length)：切下来多厚（多少行）的一块肉？
-        """
         #param.data.copy_(loaded_weight.narrow(self.tp_dim, start_idx, shard_size))
         local_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
         param.data.copy_(local_weight)
@@ -112,12 +105,9 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
         self.weight_scale_t_packed.copy_(local_scale.t().contiguous())
     # use only fp8 gemm kernal
     def forward(self, x_fp8: torch.Tensor, x_scale: torch.Tensor) -> torch.Tensor:
-
         original_shape = x_fp8.shape 
-        
         x_fp8_2d = x_fp8.view(-1, original_shape[-1])
         x_scale_1d = x_scale.view(-1)
-
         M = x_fp8_2d.shape[0]
         if M <= self.max_decode_batch:
             out_fp32 = self.output_fp32_workspace[:M, :]
@@ -129,8 +119,6 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
                 dtype=torch.float32
             )
 
-
-
         y_2d_fp32 = triton_fp8_block_gemm_optimized(
             x_fp8=x_fp8_2d,
             weight_fp8=self.weight_t_packed,
@@ -141,7 +129,6 @@ class ColumnParallelLinear_fp8(LinearBase_fp8):
             split_k=None,
             return_bf16=False
         )
-
         if self.bias is not None:
             y_2d_fp32 = y_2d_fp32 + self.bias
 
@@ -173,9 +160,7 @@ class RowParallelLinear_fp8(LinearBase_fp8):
         x_2d = x.view(-1, original_shape[-1])
         x_fp8, x_scale = triton_dynamic_quantize(x_2d)
         x_fp8_2d = x_fp8.view(-1, original_shape[-1])
-
         x_scale_1d = x_scale.view(-1)
-
         M = x_fp8_2d.shape[0]
         if M <= self.max_decode_batch:
             out_fp32 = self.output_fp32_workspace[:M, :]
@@ -196,9 +181,6 @@ class RowParallelLinear_fp8(LinearBase_fp8):
             split_k=None,
             return_bf16=False
         )
-
-
-
 
         if self.bias is not None:
             y_2d_fp32 = y_2d_fp32 + self.bias
